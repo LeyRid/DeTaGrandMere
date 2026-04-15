@@ -46,5 +46,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Critical - Main solver functionality
-* **Performance Target**: Complete within 2 weeks
+
 * **Frequency**: Used for every simulation

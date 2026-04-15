@@ -43,5 +43,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: High - Essential for trust in solver
-* **Performance Target**: Complete within 1 week
+
 * **Frequency**: After major changes, before release

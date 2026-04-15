@@ -45,5 +45,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Critical - Essential for MoM
-* **Performance Target**: Complete within 2 weeks
+
 * **Frequency**: Used in every simulation matrix assembly

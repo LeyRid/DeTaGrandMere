@@ -47,5 +47,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Medium - Important for adoption
-* **Performance Target**: Complete within 2 weeks
+
 * **Frequency**: Ongoing, final push before release

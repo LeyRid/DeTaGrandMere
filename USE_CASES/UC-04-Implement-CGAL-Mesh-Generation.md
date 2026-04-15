@@ -46,5 +46,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: High - Required for MoM solver
-* **Performance Target**: Complete within 2 weeks
+
 * **Frequency**: Used in every simulation

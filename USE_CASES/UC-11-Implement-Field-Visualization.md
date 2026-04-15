@@ -44,5 +44,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Medium - Important for analysis
-* **Performance Target**: Complete within 2 weeks
+
 * **Frequency**: Used after each simulation

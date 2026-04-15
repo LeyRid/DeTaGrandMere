@@ -42,5 +42,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Low - For large-scale problems only
-* **Performance Target**: Complete within 4 weeks
+
 * **Frequency**: For large mesh problems

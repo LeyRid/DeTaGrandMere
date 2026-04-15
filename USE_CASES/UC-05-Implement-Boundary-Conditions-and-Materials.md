@@ -45,5 +45,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: High - Critical for accurate simulation
-* **Performance Target**: Complete within 2 weeks
+
 * **Frequency**: Configured per simulation

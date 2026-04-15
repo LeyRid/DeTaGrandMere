@@ -45,5 +45,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: High - Core functionality
-* **Performance Target**: Complete within 2 weeks
+
 * **Frequency**: Ongoing as new formats added

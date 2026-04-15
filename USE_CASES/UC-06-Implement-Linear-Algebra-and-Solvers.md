@@ -45,5 +45,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Critical - Core of MoM solver
-* **Performance Target**: Complete within 2 weeks
+
 * **Frequency**: Used in every simulation solve

@@ -44,5 +44,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Low - Advanced use cases
-* **Performance Target**: Complete within 3 weeks
+
 * **Frequency**: Optional advanced feature

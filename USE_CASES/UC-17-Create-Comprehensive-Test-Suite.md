@@ -40,5 +40,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: High - Essential for quality
-* **Performance Target**: Ongoing throughout development
+
 * **Frequency**: Every code change

@@ -51,5 +51,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Critical - Foundation for all subsequent work
-* **Performance Target**: Complete within 1-2 days
+
 * **Frequency**: One-time setup, plus ongoing updates

@@ -41,5 +41,5 @@
 ## RELATED INFORMATION
 
 * **Priority**: Medium - Important for interoperability
-* **Performance Target**: Complete within 1 week
+
 * **Frequency**: After each simulation
