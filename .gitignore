@@ -1,0 +1,53 @@
+# Byte-compiled / optimized / compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Python egg installation metadata
+*.egg-info/
+dist/
+build/
+
+# Distribution / packaging
+*.whl
+
+# Coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Compiled extensions and shared libraries
+*.so
+*.dll
+*.dylib
+
+# macOS artifacts
+.DS_Store
+Thumbs.db
+
+# IDE settings (optional, kept for safety)
+.vscode/
+.idea/
+
+# Jupyter notebook outputs
+*.ipynb_checkpoints/
+**/*.ipynb
+
+# Environment / virtual environments
+venv/
+env/
+virtualenv/
+.env
+
+# Data and output directories
+data/
+results/
+output/
+
+# Hermes agent directory
+.hermes/
+
+# Compiled Python files in subdirectories
+**/__pycache__/
+**/*.pyc
