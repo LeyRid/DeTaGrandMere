@@ -39,6 +39,8 @@ __all__: list[str] = [
     "FieldCalculationError",
     # Configuration
     "ConfigError",
+    # Visualization / I/O
+    "VisualizationError",
 ]
 
 
@@ -143,4 +145,16 @@ class ConfigError(AntennaSimulationError):
 
     Covers missing keys, incorrect types, out-of-range values,
     and other problems with user-provided settings.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Visualization / I/O exceptions
+# ---------------------------------------------------------------------------
+
+class VisualizationError(AntennaSimulationError):
+    """Raised when visualization or plot export operations fail.
+
+    Covers rendering errors, unsupported formats, missing dependencies,
+    and file write failures in the post-processing pipeline.
     """

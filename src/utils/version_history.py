@@ -1,237 +1,116 @@
-"""
-Semantic versioning and changelog management for the deTAGrandMere project.
+"""Semantic versioning workflow with changelog automation.
 
-This module provides classes for managing semantic versioning (SemVer 2.0)
-and maintaining a structured changelog in Markdown format. The SemanticVersion
-class handles version parsing, comparison, and increment operations, while
-ChangelogManager maintains categorized change entries across versions.
+This module provides the :class:`SemanticVersion` class for managing
+project versions according to SemVer 2.0 specification, along with
+the :class:`ChangelogManager` class for automated changelog generation
+from git commit messages.
 
-Example usage::
-
-    from src.utils.version_history import SemanticVersion, ChangelogManager
-
-    # Version management
-    v = SemanticVersion(major=0, minor=1, patch=0)
-    print(v)           # "0.1.0"
-    v_new = v.increment_minor()
-    print(v_new)       # "0.2.0"
-
-    # Changelog management
-    cm = ChangelogManager("CHANGELOG.md")
-    cm.add_entry("0.2.0", "feat", "Added dipole solver")
-    cm.add_entry("0.2.0", "fix", "Corrected mesh refinement")
-    cm.add_entry("0.1.0", "feat", "Initial release")
-    cm.save()
+Key features:
+- Full SemVer 2.0 compliance with prerelease tags
+- Version comparison operators (__eq__, __lt__, __le__, __gt__, __ge__)
+- Automated changelog generation from git commits
+- Category-based version increment (MAJOR.MINOR.PATCH)
 """
 
 from __future__ import annotations
 
 import os
 import re
-from datetime import datetime, timezone
+import json
+import subprocess
+from typing import Optional, List, Tuple
 
 
 class SemanticVersion:
-    """Represent and manipulate a semantic version number per SemVer 2.0.
+    """Semantic versioning (SemVer 2.0) implementation.
 
-    Semantic versions follow the format MAJOR.MINOR.PATCH where:
-    - MAJOR is incremented for incompatible API changes
-    - MINOR is incremented for backwards-compatible functionality
-    - PATCH is incremented for backwards-compatible bug fixes
-
-    A prerelease tag (alpha, beta, rc) can be appended to indicate
-    pre-release status.
+    This class provides full SemVer 2.0 support with comparison operators,
+    hashability, and string formatting. It supports prerelease tags and
+    build metadata as specified in the SemVer specification.
 
     Parameters
     ----------
-    major : int or str, optional
-        Major version number. Default is 0.
-    minor : int or str, optional
-        Minor version number. Default is 1.
-    patch : int or str, optional
-        Patch version number. Default is 0.
-    prerelease : str or None, optional
-        Prerelease identifier. Can be "alpha", "beta", or "rc". Default is None.
+    major : int, default=0
+        Major version number (breaking changes).
+    minor : int, default=0
+        Minor version number (new features, backwards compatible).
+    patch : int, default=0
+        Patch version number (bug fixes, backwards compatible).
+    prerelease : str, optional
+        Prerelease tag (e.g., "alpha", "beta", "rc1").
+    build_metadata : str, optional
+        Build metadata (ignored in comparison).
 
     Examples
     --------
-    >>> v = SemanticVersion("1.2.3")
-    >>> print(v)
-    1.2.3
-    >>> v_minor = v.increment_minor()
-    >>> print(v_minor)
-    1.3.0
-    >>> SemanticVersion("1.0.0") < SemanticVersion("2.0.0")
+    >>> v1 = SemanticVersion(0, 1, 0)
+    >>> v2 = SemanticVersion(0, 2, 0)
+    >>> v1 < v2
     True
+    >>> v3 = SemanticVersion(1, 0, 0, prerelease="alpha")
+    >>> str(v3)
+    '1.0.0-alpha'
     """
 
     def __init__(
         self,
-        major: int | str = 0,
-        minor: int | str = 1,
-        patch: int | str = 0,
-        prerelease: str | None = None
+        major: int = 0,
+        minor: int = 0,
+        patch: int = 0,
+        prerelease: Optional[str] = None,
+        build_metadata: Optional[str] = None,
     ) -> None:
-        """Initialize a semantic version.
-
-        Can be initialized with individual components or parsed from a
-        version string in "MAJOR.MINOR.PATCH" format.
-
-        Parameters
-        ----------
-        major : int or str, optional
-            Major version number. If a single positional argument is passed
-            and it is a string, it will be parsed as "MAJOR.MINOR.PATCH".
-        minor : int or str, optional
-            Minor version number. Default is 1.
-        patch : int or str, optional
-            Patch version number. Default is 0.
-        prerelease : str or None, optional
-            Prerelease tag. Valid values: "alpha", "beta", "rc". Default is None.
-
-        Raises
-        ------
-        ValueError
-            If the version string cannot be parsed or contains invalid components.
-        """
-        self.prerelease: str | None = prerelease
-
-        # Handle case where first argument is a full version string
-        if isinstance(major, str) and minor == 1 and patch == 0:
-            # Only treat as version string if it looks like one
-            if re.match(r"^\d+\.\d+\.\d+", major):
-                parts = major.split(".")
-                self.major = int(parts[0])
-                self.minor = int(parts[1]) if len(parts) > 1 else 0
-                self.patch = int(parts[2]) if len(parts) > 2 else 0
-                return
-
-        self.major: int = int(major)
-        self.minor: int = int(minor)
-        self.patch: int = int(patch)
-
-    def increment_major(self) -> SemanticVersion:
-        """Bump the major version number and reset minor and patch to zero.
-
-        Returns
-        -------
-        SemanticVersion
-            A new SemanticVersion instance with incremented major version.
-
-        Examples
-        --------
-        >>> v = SemanticVersion("1.2.3")
-        >>> v_new = v.increment_major()
-        >>> print(v_new)
-        2.0.0
-        """
-        return SemanticVersion(
-            major=self.major + 1,
-            minor=0,
-            patch=0,
-            prerelease=None
-        )
-
-    def increment_minor(self) -> SemanticVersion:
-        """Bump the minor version number and reset patch to zero.
-
-        Returns
-        -------
-        SemanticVersion
-            A new SemanticVersion instance with incremented minor version.
-
-        Examples
-        --------
-        >>> v = SemanticVersion("1.2.3")
-        >>> v_new = v.increment_minor()
-        >>> print(v_new)
-        1.3.0
-        """
-        return SemanticVersion(
-            major=self.major,
-            minor=self.minor + 1,
-            patch=0,
-            prerelease=None
-        )
-
-    def increment_patch(self) -> SemanticVersion:
-        """Bump the patch version number.
-
-        Returns
-        -------
-        SemanticVersion
-            A new SemanticVersion instance with incremented patch version.
-
-        Examples
-        --------
-        >>> v = SemanticVersion("1.2.3")
-        >>> v_new = v.increment_patch()
-        >>> print(v_new)
-        1.2.4
-        """
-        return SemanticVersion(
-            major=self.major,
-            minor=self.minor,
-            patch=self.patch + 1,
-            prerelease=None
-        )
+        """Initialise a semantic version."""
+        self.major = major
+        self.minor = minor
+        self.patch = patch
+        self.prerelease = prerelease
+        self.build_metadata = build_metadata
 
     def __str__(self) -> str:
-        """Return the version as a formatted MAJOR.MINOR.PATCH string.
+        """Return the version as a string in SemVer format.
 
         Returns
         -------
         str
-            Version string in "MAJOR.MINOR.PATCH" format. If a prerelease tag
-            is set, it is appended with a hyphen (e.g., "1.0.0-alpha").
-
-        Examples
-        --------
-        >>> str(SemanticVersion(1, 2, 3))
-        '1.2.3'
-        >>> str(SemanticVersion(0, 1, 0, prerelease="alpha"))
-        '0.1.0-alpha'
+            Version string (e.g., "1.2.3-alpha" or "1.2.3+build.123").
         """
-        base = f"{self.major}.{self.minor}.{self.patch}"
-        if self.prerelease is not None:
-            base += f"-{self.prerelease}"
-        return base
+        version = f"{self.major}.{self.minor}.{self.patch}"
+        if self.prerelease:
+            version += f"-{self.prerelease}"
+        if self.build_metadata:
+            version += f"+{self.build_metadata}"
+        return version
 
     def __repr__(self) -> str:
-        """Return a detailed representation of the version object.
+        """Return the version as a constructor call."""
+        parts = [str(x) for x in (self.major, self.minor, self.patch)]
+        if self.prerelease:
+            parts.append(f"prerelease='{self.prerelease}'")
+        if self.build_metadata:
+            parts.append(f"build_metadata='{self.build_metadata}'")
+        return f"SemanticVersion({', '.join(parts)})"
 
-        Returns
-        -------
-        str
-            String representation showing class name and all components.
-        """
-        pre = f", prerelease='{self.prerelease}'" if self.prerelease is not None else ""
-        return f"SemanticVersion(major={self.major}, minor={self.minor}, patch={self.patch}{pre})"
-
-    def __eq__(self, other: object) -> bool:
-        """Compare this version with another for equality.
+    def __eq__(self, other) -> bool:
+        """Check equality between two versions.
 
         Parameters
         ----------
-        other : object
-            Another SemanticVersion instance or a string representation.
+        other : SemanticVersion or str
+            Version to compare against.
 
         Returns
         -------
         bool
-            True if the versions are equal, False otherwise.
-
-        Examples
-        --------
-        >>> SemanticVersion("1.0.0") == SemanticVersion("1.0.0")
-        True
-        >>> SemanticVersion("1.0.0") == SemanticVersion("1.0.1")
-        False
+            True if the versions are equal.
         """
         if isinstance(other, str):
-            other = SemanticVersion(other)
+            other = SemanticVersion.from_string(other)
+
         if not isinstance(other, SemanticVersion):
             return NotImplemented
+
+        # Compare core version (ignore build metadata for equality)
         return (
             self.major == other.major
             and self.minor == other.minor
@@ -239,278 +118,401 @@ class SemanticVersion:
             and self.prerelease == other.prerelease
         )
 
-    def __lt__(self, other: object) -> bool:
-        """Compare this version with another for less-than ordering.
-
-        Versions are compared by major, minor, and patch in that order.
-        Prerelease versions are considered lower than the corresponding
-        release version (e.g., "1.0.0-alpha" < "1.0.0").
+    def __lt__(self, other) -> bool:
+        """Check if this version is less than another.
 
         Parameters
         ----------
-        other : object
-            Another SemanticVersion instance or a string representation.
+        other : SemanticVersion or str
+            Version to compare against.
 
         Returns
         -------
         bool
-            True if this version is less than the other, False otherwise.
-
-        Examples
-        --------
-        >>> SemanticVersion("0.9.0") < SemanticVersion("1.0.0")
-        True
-        >>> SemanticVersion("1.0.0") < SemanticVersion("1.0.1")
-        True
+            True if this version is less than other.
         """
         if isinstance(other, str):
-            other = SemanticVersion(other)
+            other = SemanticVersion.from_string(other)
+
         if not isinstance(other, SemanticVersion):
             return NotImplemented
 
-        # Prerelease is always less than the release version
-        self_pre = 0 if self.prerelease is not None else 1
-        other_pre = 0 if other.prerelease is not None else 1
+        # Compare major.minor.patch
+        if (self.major, self.minor, self.patch) < (other.major, other.minor, other.patch):
+            return True
 
-        if (self.major, self.minor, self.patch) != (other.major, other.minor, other.patch):
-            return (self.major, self.minor, self.patch) < (other.major, other.minor, other.patch)
+        # Handle prerelease: no prerelease > has prerelease
+        if self.prerelease is None and other.prerelease is not None:
+            return False
+        if self.prerelease is not None and other.prerelease is None:
+            return True
 
-        # Same version numbers; prerelease is lower
-        return self_pre < other_pre
+        # Compare prerelease strings
+        if self.prerelease != other.prerelease:
+            return self.prerelease < other.prerelease
 
-    def __le__(self, other: object) -> bool:
-        """Less than or equal comparison."""
-        if isinstance(other, str):
-            other = SemanticVersion(other)
-        if not isinstance(other, SemanticVersion):
-            return NotImplemented
+        return False
+
+    def __le__(self, other) -> bool:
+        """Check if this version is less than or equal to another."""
         return self == other or self < other
 
-    def __gt__(self, other: object) -> bool:
-        """Greater than comparison."""
-        if isinstance(other, str):
-            other = SemanticVersion(other)
-        if not isinstance(other, SemanticVersion):
-            return NotImplemented
+    def __gt__(self, other) -> bool:
+        """Check if this version is greater than another."""
         return not self <= other
 
-    def __ge__(self, other: object) -> bool:
-        """Greater than or equal comparison."""
-        if isinstance(other, str):
-            other = SemanticVersion(other)
-        if not isinstance(other, SemanticVersion):
-            return NotImplemented
+    def __ge__(self, other) -> bool:
+        """Check if this version is greater than or equal to another."""
         return not self < other
 
     def __hash__(self) -> int:
-        """Return a hash value for use in sets and dictionary keys.
+        """Return hash value for use in dictionaries and sets.
 
         Returns
         -------
         int
-            Hash of the version tuple (major, minor, patch, prerelease).
+            Hash of the core version tuple.
         """
         return hash((self.major, self.minor, self.patch, self.prerelease))
 
+    def increment_major(self) -> "SemanticVersion":
+        """Increment the major version number.
 
-class ChangelogManager:
-    """Manage a structured Markdown changelog for versioned releases.
+        Returns
+        -------
+        SemanticVersion
+            New version with incremented major number and reset minor/patch.
+        """
+        return SemanticVersion(
+            major=self.major + 1,
+            minor=0,
+            patch=0,
+            prerelease=None,
+            build_metadata=self.build_metadata,
+        )
 
-    Maintains categorized change entries organized by version and category.
-    Supports adding entries, generating formatted sections, and persisting
-    the changelog to a Markdown file.
+    def increment_minor(self) -> "SemanticVersion":
+        """Increment the minor version number.
 
-    Parameters
-    ----------
-    changelog_path : str, optional
-        File path where the changelog will be saved. Default is "CHANGELOG.md".
+        Returns
+        -------
+        SemanticVersion
+            New version with incremented minor number and reset patch.
+        """
+        return SemanticVersion(
+            major=self.major,
+            minor=self.minor + 1,
+            patch=0,
+            prerelease=None,
+            build_metadata=self.build_metadata,
+        )
 
-    Examples
-    --------
-    >>> cm = ChangelogManager("CHANGELOG.md")
-    >>> cm.add_entry("0.2.0", "feat", "Added new solver")
-    >>> cm.add_entry("0.2.0", "fix", "Fixed mesh generation bug")
-    >>> section = cm.generate_section("0.2.0")
-    >>> print(section[:50])
-    ## [0.2.0] - 2026-04-18
+    def increment_patch(self) -> "SemanticVersion":
+        """Increment the patch version number.
 
-    ### Features
-    """
+        Returns
+        -------
+        SemanticVersion
+            New version with incremented patch number.
+        """
+        return SemanticVersion(
+            major=self.major,
+            minor=self.minor,
+            patch=self.patch + 1,
+            prerelease=None,
+            build_metadata=self.build_metadata,
+        )
 
-    def __init__(self, changelog_path: str = "CHANGELOG.md") -> None:
-        """Initialize the changelog manager.
+    def set_prerelease(self, tag: str) -> "SemanticVersion":
+        """Set the prerelease tag.
 
         Parameters
         ----------
-        changelog_path : str, optional
-            Path to the changelog Markdown file. Default is "CHANGELOG.md".
+        tag : str
+            Prerelease tag (e.g., "alpha", "beta", "rc1").
+
+        Returns
+        -------
+        SemanticVersion
+            New version with the specified prerelease tag.
         """
-        self.changelog_path: str = changelog_path
-        # Dictionary mapping version strings to lists of entries
-        # Each entry is a dict with 'category', 'message', and 'date'
-        self.entries: dict[str, list[dict[str, str | None]]] = {}
+        return SemanticVersion(
+            major=self.major,
+            minor=self.minor,
+            patch=self.patch,
+            prerelease=tag,
+            build_metadata=self.build_metadata,
+        )
 
-    def add_entry(
-        self,
-        version: str,
-        category: str,
-        message: str,
-        date: str | None = None
-    ) -> None:
-        """Add a changelog entry for a specific version and category.
-
-        Appends a new entry to the changelog organized by version. Valid
-        categories are: feat, fix, docs, perf, refactor, test. Entries
-        are stored in a dictionary keyed by version string.
-
-        Parameters
-        ----------
-        version : str
-            Semantic version string (e.g., "0.2.0", "1.0.0-alpha").
-        category : str
-            Change category. Must be one of: "feat", "fix", "docs",
-            "perf", "refactor", "test".
-        message : str
-            Description of the change.
-        date : str or None, optional
-            Date string in YYYY-MM-DD format. Defaults to today's date.
-
-        Raises
-        ------
-        ValueError
-            If the category is not one of the recognized types.
-
-        Examples
-        --------
-        >>> cm = ChangelogManager()
-        >>> cm.add_entry("0.1.0", "feat", "Initial release")
-        >>> cm.add_entry("0.2.0", "fix", "Fixed import error")
-        """
-        valid_categories = {"feat", "fix", "docs", "perf", "refactor", "test"}
-        if category not in valid_categories:
-            raise ValueError(
-                f"Invalid category '{category}'. Must be one of: {', '.join(sorted(valid_categories))}"
-            )
-
-        if date is None:
-            date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-        entry = {
-            "category": category,
-            "message": message,
-            "date": date,
-        }
-
-        if version not in self.entries:
-            self.entries[version] = []
-        self.entries[version].append(entry)
-
-    def generate_section(self, version_str: str) -> str:
-        """Generate a Markdown section for a specific version with categorized entries.
-
-        Groups all entries for the given version by category and formats them
-        as a structured Markdown heading with sub-sections for each category.
+    @staticmethod
+    def from_string(version_str: str) -> "SemanticVersion":
+        """Parse a version string into a SemanticVersion object.
 
         Parameters
         ----------
         version_str : str
-            Semantic version string (e.g., "0.2.0").
+            Version string in SemVer format (e.g., "1.2.3-alpha+build.123").
+
+        Returns
+        -------
+        SemanticVersion
+            Parsed version object.
+
+        Raises
+        ------
+        ValueError
+            If the version string does not match SemVer format.
+        """
+        # SemVer regex pattern
+        pattern = r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9]+))?(?:\+(.+))?$"
+        match = re.match(pattern, version_str)
+
+        if not match:
+            raise ValueError(f"Invalid SemVer string: {version_str}")
+
+        major, minor, patch, prerelease, build_metadata = match.groups()
+
+        return SemanticVersion(
+            major=int(major),
+            minor=int(minor),
+            patch=int(patch),
+            prerelease=prerelease or None,
+            build_metadata=build_metadata or None,
+        )
+
+
+class ChangelogManager:
+    """Manage changelog entries and automated generation.
+
+    This class provides methods for managing the project changelog,
+    including adding entries, generating sections by category, and
+    saving formatted changelog files.
+
+    Parameters
+    ----------
+    changelog_path : str, default="CHANGELOG.md"
+        Path to the changelog file.
+    """
+
+    def __init__(self, changelog_path: str = "CHANGELOG.md") -> None:
+        """Initialise the changelog manager."""
+        self.changelog_path = changelog_path
+        self.entries: List[dict] = []
+
+    # -------------------------------------------------------------------
+    # Entry management
+#    ----------------------------------------------------------------
+
+    def add_entry(
+        self,
+        category: str,
+        description: str,
+        version: Optional[str] = None,
+    ) -> None:
+        """Add a changelog entry.
+
+        Parameters
+        ----------
+        category : str
+            Entry category: "feat", "fix", "docs", "perf", "refactor", "test".
+        description : str
+            Description of the change.
+        version : str, optional
+            Version this entry applies to. If None, uses current version.
+
+        Raises
+        ------
+        ValueError
+            If the category is not one of the allowed values.
+        """
+        valid_categories = {"feat", "fix", "docs", "perf", "refactor", "test"}
+        if category not in valid_categories:
+            raise ValueError(
+                f"Invalid category: {category}. Allowed: {valid_categories}"
+            )
+
+        self.entries.append({
+            "category": category,
+            "description": description,
+            "version": version or "0.1.0",
+            "timestamp": _get_current_timestamp(),
+        })
+
+    def generate_section(self, version: str) -> str:
+        """Generate a changelog section for a specific version.
+
+        Parameters
+        ----------
+        version : str
+            Version string to generate the section for.
 
         Returns
         -------
         str
-            Markdown-formatted section containing the categorized changelog
-            entries for the specified version.
-
-        Notes
-        -----
-        Categories with no entries are omitted from the output. The version
-        date is determined from the earliest entry's date, or defaults to
-        today if no entries exist.
+            Formatted markdown section for this version.
         """
-        lines: list[str] = []
-        lines.append(f"## [{version_str}]")
+        # Filter entries for this version
+        version_entries = [e for e in self.entries if e["version"] == version]
 
-        # Determine version date from entries
-        entries = self.entries.get(version_str, [])
-        dates = [e["date"] for e in entries if e.get("date")]
-        version_date = dates[0] if dates else datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        lines.append(f"### {version_date}")
-        lines.append("")
+        if not version_entries:
+            return f"## [{version}] - {_get_current_date()}\n\nNo changes recorded.\n"
 
-        # Category labels
+        # Group by category
+        categories = {}
+        for entry in version_entries:
+            cat = entry["category"]
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(entry)
+
+        # Generate markdown
+        lines = [f"## [{version}] - {_get_current_date()}"]
+
         category_labels = {
             "feat": "Features",
             "fix": "Bug Fixes",
             "docs": "Documentation",
-            "perf": "Performance",
-            "refactor": "Refactoring",
+            "perf": "Performance Improvements",
+            "refactor": "Code Refactoring",
             "test": "Tests",
         }
 
-        # Group entries by category
-        grouped: dict[str, list[dict]] = {}
-        for entry in entries:
-            cat = entry["category"]
-            if cat not in grouped:
-                grouped[cat] = []
-            grouped[cat].append(entry)
+        for cat in ["feat", "fix", "docs", "perf", "refactor", "test"]:
+            if cat in categories:
+                lines.append(f"\n### {category_labels[cat]}")
+                for entry in categories[cat]:
+                    lines.append(f"- {entry['description']}")
 
-        # Write each category group
-        for cat_key in ["feat", "fix", "docs", "perf", "refactor", "test"]:
-            cat_entries = grouped.get(cat_key, [])
-            if not cat_entries:
-                continue
+        return "\n".join(lines) + "\n"
 
-            lines.append(f"### {category_labels[cat_key]}")
-            lines.append("")
-            for entry in cat_entries:
-                lines.append(f"- {entry['message']}")
-            lines.append("")
+    def save(self, version: str) -> str:
+        """Save the changelog to disk.
 
-        return "\n".join(lines)
+        Parameters
+        ----------
+        version : str
+            Version string for the section header.
 
-    def save(self) -> None:
-        """Write the complete changelog to the Markdown file.
-
-        Generates a full Markdown changelog file with all version sections,
-        sorted in descending version order (newest first). Writes the file
-        to the path specified by ``self.changelog_path``.
-
-        Raises
-        ------
-        OSError
-            If the file cannot be written due to permission or path issues.
-
-        Notes
-        -----
-        The generated file includes:
-        - A top-level "Changelog" heading
-        - All version sections sorted by semantic version (newest first)
-        - Categorized entries within each version section
+        Returns
+        -------
+        str
+            Path to the saved changelog file.
         """
-        # Sort versions in descending order (newest first)
-        sorted_versions = sorted(
-            self.entries.keys(),
-            key=lambda v: SemanticVersion(v),
-            reverse=True
-        )
+        content = self.generate_section(version)
 
-        lines: list[str] = []
-        lines.append("# Changelog")
-        lines.append("")
-        lines.append("All notable changes to this project will be documented in this file.")
-        lines.append("")
-        lines.append("The format is based on [Keep a Changelog](https://keepachangelog.com/),")
-        lines.append("and this project adheres to [Semantic Versioning](https://semver.org/).")
-        lines.append("")
+        # Read existing changelog if it exists
+        if os.path.exists(self.changelog_path):
+            with open(self.changelog_path, "r") as f:
+                existing = f.read()
+            content = content + "\n" + existing
 
-        for version_str in sorted_versions:
-            section = self.generate_section(version_str)
-            lines.append(section)
-            lines.append("---")
-            lines.append("")
+        with open(self.changelog_path, "w") as f:
+            f.write(content)
 
-        output_path = self.changelog_path
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        return self.changelog_path
+
+
+def _get_current_timestamp() -> str:
+    """Get the current timestamp in ISO format.
+
+    Returns
+    -------
+    str
+        Timestamp string (YYYY-MM-DDTHH:MM:SS).
+    """
+    from datetime import datetime
+    return datetime.now().isoformat()
+
+
+def _get_current_date() -> str:
+    """Get the current date in YYYY-MM-DD format.
+
+    Returns
+    -------
+    str
+        Date string.
+    """
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+class GitChangelogGenerator:
+    """Generate changelog entries from git commit messages.
+
+    This class parses git log output to automatically generate
+    changelog entries based on conventional commit message format.
+
+    Supported commit types:
+    - feat: New features
+    - fix: Bug fixes
+    - docs: Documentation changes
+    - perf: Performance improvements
+    - refactor: Code refactoring
+    - test: Test additions or corrections
+    """
+
+    @staticmethod
+    def generate_from_git(
+        git_path: str = ".",
+        since_tag: Optional[str] = None,
+    ) -> List[dict]:
+        """Generate changelog entries from git commits.
+
+        Parameters
+        ----------
+        git_path : str, default="."
+            Path to the git repository root.
+        since_tag : str, optional
+            Git tag to start from. If None, uses all history.
+
+        Returns
+        -------
+        list[dict]
+            Changelog entries with keys:
+            - 'category': commit type (feat, fix, etc.)
+            - 'description': commit message subject
+            - 'version': inferred version from tag
+        """
+        # Build git log command
+        cmd = ["git", "-C", git_path, "log"]
+
+        if since_tag:
+            cmd.extend(["--since", since_tag])
+
+        cmd.extend([
+            "--pretty=format:%s%n%h%n%an%n%ad",
+            "--date=short",
+        ])
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                return []
+
+            # Parse commit messages
+            entries = []
+            commits = result.stdout.strip().split("\n\n")
+
+            for commit_block in commits:
+                lines = commit_block.split("\n")
+                if len(lines) < 3:
+                    continue
+
+                subject = lines[0]
+                hash_ = lines[1]
+                author = lines[2]
+
+                # Parse conventional commit format
+                match = re.match(r"^(\w+)(?:\(([^)]+)\))?: (.+)$", subject)
+                if match:
+                    category, scope, description = match.groups()
+                    entries.append({
+                        "category": category,
+                        "description": f"{description} ({hash_[:7]})",
+                        "author": author,
+                    })
+
+            return entries
+
+        except subprocess.SubprocessError:
+            return []

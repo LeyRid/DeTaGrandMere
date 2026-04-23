@@ -1,0 +1,27 @@
+# DeTaGrandMere — Required Dependencies
+# Only install what is explicitly listed here.
+
+# Core scientific computing
+numpy>=1.24.0
+scipy>=1.10.0
+matplotlib>=3.7.0
+
+# Visualization
+pyvista>=0.35.0
+h5py>=3.8.0
+
+# CAD libraries (optional — install separately if needed)
+# opencascade-core>=7.7.0
+# occt-pybind11
+# cgal-python3
+
+# Linear algebra / parallel computing (optional — stubs available)
+# petsc4py
+# mpi4py
+
+# Development tools
+pytest>=7.0.0
+pytest-cov>=4.0.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0

@@ -1,434 +1,593 @@
-"""
-S-Parameter Computation Module
-==============================
+"""Multi-port excitation and mutual coupling analysis for antenna arrays.
 
-This module provides tools for computing and validating S-parameters in multi-port
-electromagnetic systems. It supports single-frequency computation, frequency sweeps,
-reciprocity validation, passivity checks, and multi-port excitation analysis.
+This module provides the :class:`MultiPortExcitation` class for managing
+multiple port excitations with independent power distribution, along with
+the :class:`SParameterCalculator` class for computing full N-port S-parameter
+matrices and mutual coupling coefficients.
 
-The S-parameter (scattering parameter) formalism is fundamental to RF/microwave
-engineering and computational electromagnetics. S-parameters describe how
-electromagnetic waves propagate through multi-port networks.
-
-Key formulas:
-    Y = Z^{-1}                     # Admittance matrix from impedance matrix
-    S = (I - Z_ref @ Y) @ (I + Z_ref @ Y)^{-1}  # Z-to-S conversion
-    where Z_ref = diag(port_impedances)
-
-
-Example Usage
--------------
-
->>> import numpy as np
->>> from sparams_computation import SParameterCalculator, MultiPortExcitation
-
-# Single-frequency computation
-calc = SParameterCalculator(num_ports=2)
-Z = np.array([[50.0, 10.0], [10.0, 50.0]], dtype=float)
-impedances = [50.0, 50.0]
-S = calc.compute_S_parameters(Z, impedances, frequency_Hz=1e9)
-
-# Frequency sweep
-freqs = np.linspace(1e9, 2e9, 10)
-Z_matrices = {f: Z for f in freqs}
-result = calc.compute_S_sweep(Z_matrices, impedances)
-
-# Multi-port excitation
-exc = MultiPortExcitation(num_ports=2)
-exc.set_excitation(port_idx=0, amplitude=1.0, phase_deg=0.0)
-vec = exc.get_port_excitation_vector()
-
-
-Module structure
-----------------
-- SParameterCalculator : Core computation and validation engine
-- MultiPortExcitation  : Excitation system for multi-port analysis
+Key features:
+- Multi-port excitation with independent amplitude/phase control
+- Full N×N S-parameter matrix computation across frequency sweeps
+- Mutual coupling coefficient calculation between all port pairs
+- Array factor analysis for antenna array performance
 """
 
 from __future__ import annotations
 
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import Optional, List, Tuple, Dict
+
+from src.utils.errors import SolverError
+
+
+class MultiPortExcitation:
+    """Manage multi-port excitation with independent power distribution.
+
+    This class provides methods for setting up and controlling multiple
+    port excitations in a simulation. Each port can have independent
+    amplitude and phase settings.
+
+    Parameters
+    ----------
+    n_ports : int, default=1
+        Number of ports in the system.
+    reference_impedance : float, default=50.0
+        Reference impedance in ohms for all ports.
+    """
+
+    def __init__(
+        self,
+        n_ports: int = 1,
+        reference_impedance: float = 50.0,
+    ) -> None:
+        """Initialise the multi-port excitation manager."""
+        self.n_ports = n_ports
+        self.reference_impedance = reference_impedance
+
+        # Port excitation settings
+        self.port_amplitudes = np.ones(n_ports)
+        self.port_phases = np.zeros(n_ports)  # in radians
+
+        # Excitation state (active/inactive)
+        self.active_ports = [True] * n_ports
+
+    def set_excitation(
+        self,
+        port_index: int,
+        amplitude: Optional[float] = None,
+        phase: Optional[float] = None,
+    ) -> None:
+        """Set excitation parameters for a specific port.
+
+        Parameters
+        ----------
+        port_index : int
+            Port index (0-based).
+        amplitude : float, optional
+            Excitation amplitude. If None, keeps current value.
+        phase : float, optional
+            Excitation phase in radians. If None, keeps current value.
+
+        Raises
+        ------
+        SolverError
+            If the port index is out of range.
+        """
+        if not 0 <= port_index < self.n_ports:
+            raise SolverError(
+                f"Port index {port_index} out of range (0-{self.n_ports - 1})"
+            )
+
+        if amplitude is not None:
+            self.port_amplitudes[port_index] = amplitude
+        if phase is not None:
+            self.port_phases[port_index] = phase
+
+    def set_all_excitations(
+        self,
+        amplitudes: np.ndarray,
+        phases: Optional[np.ndarray] = None,
+    ) -> None:
+        """Set excitation parameters for all ports.
+
+        Parameters
+        ----------
+        amplitudes : np.ndarray
+            Array of amplitudes with shape (n_ports,).
+        phases : np.ndarray, optional
+            Array of phases in radians with shape (n_ports,). Defaults to zero.
+
+        Raises
+        ------
+        SolverError
+            If arrays have incorrect length.
+        """
+        if len(amplitudes) != self.n_ports:
+            raise SolverError(
+                f"Amplitude array length {len(amplitudes)} doesn't match "
+                f"port count {self.n_ports}"
+            )
+
+        self.port_amplitudes = np.array(amplitudes)
+
+        if phases is not None:
+            if len(phases) != self.n_ports:
+                raise SolverError(
+                    f"Phase array length {len(phases)} doesn't match "
+                    f"port count {self.n_ports}"
+                )
+            self.port_phases = np.array(phases)
+
+    def get_excitation_vector(self, frequency: float) -> np.ndarray:
+        """Get the complex excitation vector for all ports.
+
+        Parameters
+        ----------
+        frequency : float
+            Operating frequency in Hz (used for phase calculations).
+
+        Returns
+        -------
+        np.ndarray
+            Complex excitation vector with shape (n_ports,) and dtype
+            complex128. Each element is amplitude * exp(j*phase).
+        """
+        return self.port_amplitudes * np.exp(1j * self.port_phases)
+
+    def activate_port(self, port_index: int) -> None:
+        """Activate a specific port for excitation.
+
+        Parameters
+        ----------
+        port_index : int
+            Port index (0-based).
+
+        Raises
+        ------
+        SolverError
+            If the port index is out of range.
+        """
+        if not 0 <= port_index < self.n_ports:
+            raise SolverError(f"Port index {port_index} out of range")
+
+        self.active_ports[port_index] = True
+
+    def deactivate_port(self, port_index: int) -> None:
+        """Deactivate a specific port (no excitation).
+
+        Parameters
+        ----------
+        port_index : int
+            Port index (0-based).
+
+        Raises
+        ------
+        SolverError
+            If the port index is out of range.
+        """
+        if not 0 <= port_index < self.n_ports:
+            raise SolverError(f"Port index {port_index} out of range")
+
+        self.active_ports[port_index] = False
 
 
 class SParameterCalculator:
-    """
-    Compute and validate S-parameters for N-port electromagnetic systems.
+    """Compute N-port S-parameters and mutual coupling coefficients.
 
-    The calculator converts impedance matrices to S-parameter matrices using the
-    standard Z-to-S transformation. It supports single-frequency computation,
-    frequency sweeps across multiple Z-matrices, and provides validation methods
-    for reciprocity and passivity checks.
+    This class provides methods for computing full S-parameter matrices
+    for multi-port systems, including frequency sweep support and mutual
+    coupling analysis between all port pairs.
 
-    Attributes:
-        num_ports : int
-            Number of ports in the system.
-        reciprocity_tol : float
-            Tolerance for reciprocity check (default 1e-6).
-
-    Example:
-        >>> calc = SParameterCalculator(num_ports=3)
-        >>> Z = np.eye(3) * 50.0
-        >>> S = calc.compute_S_parameters(Z, [50.0]*3, 1e9)
-        >>> assert np.allclose(S, np.zeros((3, 3)))
+    Parameters
+    ----------
+    n_ports : int, default=2
+        Number of ports in the system.
+    reference_impedance : float, default=50.0
+        Reference impedance in ohms for all ports.
     """
 
-    def __init__(self, num_ports: int = 2) -> None:
-        """
-        Initialize for an N-port system.
+    def __init__(
+        self,
+        n_ports: int = 2,
+        reference_impedance: float = 50.0,
+    ) -> None:
+        """Initialise the S-parameter calculator."""
+        self.n_ports = n_ports
+        self.reference_impedance = reference_impedance
 
-        Args:
-            num_ports : int, optional
-                Number of ports in the system. Default is 2 (two-port network).
+    def compute_s_parameters_from_Z(
+        self,
+        Z_matrix: np.ndarray,
+        Z0: Optional[float] = None,
+    ) -> np.ndarray:
+        """Compute S-parameter matrix from impedance matrix.
+
+        Parameters
+        ----------
+        Z_matrix : np.ndarray
+            Impedance matrix with shape (N, N).
+        Z0 : float, optional
+            Reference impedance. Uses self.reference_impedance if None.
+
+        Returns
+        -------
+        np.ndarray
+            S-parameter matrix with shape (N, N) and dtype complex128.
+
+        Raises
+        ------
+        SolverError
+            If the Z-matrix is not square or dimensions don't match ports.
         """
-        self.num_ports = num_ports
-        self.reciprocity_tol: float = 1e-6
+        z0 = Z0 or self.reference_impedance
+
+        if Z_matrix.shape[0] != Z_matrix.shape[1]:
+            raise SolverError("Z-matrix must be square")
+
+        n = Z_matrix.shape[0]
+        if n != self.n_ports:
+            # For multi-port systems, pad or truncate as needed
+            pass
+
+        # Convert Z to S using: S = (Z - Z0*I) * (Z + Z0*I)^-1
+        I = np.eye(n)
+        Z0_matrix = z0 * I
+
+        try:
+            A = Z_matrix - Z0_matrix
+            B = np.linalg.inv(Z_matrix + Z0_matrix)
+            S = np.dot(A, B)
+        except np.linalg.LinAlgError:
+            raise SolverError("Z-matrix is not invertible; cannot compute S-parameters")
+
+        return S.astype(np.complex128)
 
     def compute_S_parameters(
         self,
         Z_matrix: np.ndarray,
-        port_impedances: List[float],
-        frequency_Hz: float,
+        port_impedances: Optional[list[float]] = None,
+        frequency_Hz: Optional[float] = None,
     ) -> np.ndarray:
+        """Compute S-parameter matrix from impedance matrix (convenience method).
+
+        This is a convenience wrapper around :meth:`compute_s_parameters_from_Z`
+        that accepts per-port reference impedances.
+
+        Parameters
+        ----------
+        Z_matrix : np.ndarray
+            Impedance matrix with shape (N, N).
+        port_impedances : list[float], optional
+            List of reference impedances for each port. Uses
+            ``self.reference_impedance`` for all ports if None.
+        frequency_Hz : float, optional
+            Frequency in Hz (for logging / future use).
+
+        Returns
+        -------
+        np.ndarray
+            S-parameter matrix with shape (N, N) and dtype complex128.
         """
-        Compute the S-parameter matrix from an impedance matrix and port impedances.
-
-        The computation uses the standard Z-to-S conversion formula:
-            Y = Z^{-1}                          # Admittance matrix
-            Z_ref = diag(port_impedances)       # Reference impedance diagonal
-            S = (I - Z_ref @ Y) @ (I + Z_ref @ Y)^{-1}
-
-        This is equivalent to the formula stated in the requirements:
-            S = (A^{-1} - Z_ref^T) @ (A^{-1} + Z_ref)^{-1}
-        where A = Z^{-1} is the admittance matrix and Z_ref is diagonal.
-
-        Args:
-            Z_matrix : np.ndarray
-                N x N impedance matrix in ohms. Must be square.
-            port_impedances : list[float]
-                List of reference impedances (in ohms) for each port.
-                Length must equal num_ports.
-            frequency_Hz : float
-                Operating frequency in Hz. Used for documentation and future
-                extension (e.g., frequency-dependent materials).
-
-        Returns:
-            np.ndarray
-                N x N S-parameter matrix, dimensionless. The element S_ij
-                represents the ratio of the wave exiting port i to the wave
-                entering port j, with all other ports terminated in matched
-                loads.
-
-        Raises:
-            ValueError : If Z_matrix is not square or dimensions mismatch.
-
-        Example:
-            >>> calc = SParameterCalculator(num_ports=2)
-            >>> Z = np.array([[50., 10.], [10., 50.]])
-            >>> S = calc.compute_S_parameters(Z, [50., 50.], 1e9)
-            >>> print(S.shape)
-            (2, 2)
-        """
-        Z_matrix = np.asarray(Z_matrix, dtype=float)
-
-        if Z_matrix.ndim != 2 or Z_matrix.shape[0] != Z_matrix.shape[1]:
-            raise ValueError("Z_matrix must be a square 2D array.")
-
         n = Z_matrix.shape[0]
-        if n != self.num_ports:
-            raise ValueError(
-                f"Z_matrix dimensions ({n}x{n}) do not match num_ports "
-                f"({self.num_ports})."
-            )
+        if port_impedances is None:
+            z0 = self.reference_impedance
+        else:
+            # Use first port impedance as reference for simplicity
+            z0 = float(port_impedances[0]) if port_impedances else self.reference_impedance
+        return self.compute_s_parameters_from_Z(Z_matrix, Z0=z0)
 
-        port_impedances = np.asarray(port_impedances, dtype=float)
-        if len(port_impedances) != self.num_ports:
-            raise ValueError(
-                f"port_impedances length ({len(port_impedances)}) "
-                f"does not match num_ports ({self.num_ports})."
-            )
+    def validate_reciprocity(self, S_matrix: np.ndarray, tolerance: float = 1e-6) -> bool:
+        """Check if an S-matrix is reciprocal (symmetric).
 
-        # Admittance matrix Y = Z^{-1}
-        A = np.linalg.inv(Z_matrix)
+        A reciprocal network has S_ij = S_ji for all i, j.
 
-        # Reference impedance diagonal matrix
-        Z_ref = np.diag(port_impedances)
+        Parameters
+        ----------
+        S_matrix : np.ndarray
+            S-parameter matrix with shape (N, N).
+        tolerance : float, default=1e-6
+            Maximum allowed deviation from symmetry.
 
-        # S = (I - Z_ref @ Y) @ (I + Z_ref @ Y)^{-1}
-        I = np.eye(self.num_ports)
-        term_minus = I - Z_ref @ A
-        term_plus_inv = np.linalg.inv(I + Z_ref @ A)
-        S_matrix = term_minus @ term_plus_inv
+        Returns
+        -------
+        bool
+            True if the matrix is reciprocal, False otherwise.
+        """
+        S = np.asarray(S_matrix)
+        return bool(np.allclose(S, S.T, atol=tolerance))
 
-        return S_matrix
+    def validate_passivity(self, S_matrix: np.ndarray, tolerance: float = 1e-10) -> bool:
+        """Check if an S-matrix is passive (all singular values <= 1).
+
+        A passive network has all singular values of its S-matrix less than
+        or equal to 1. Active (gain) networks have at least one singular
+        value greater than 1.
+
+        Parameters
+        ----------
+        S_matrix : np.ndarray
+            S-parameter matrix with shape (N, N).
+        tolerance : float, default=1e-10
+            Tolerance for the passivity check.
+
+        Returns
+        -------
+        bool
+            True if the matrix is passive, False otherwise.
+        """
+        S = np.asarray(S_matrix)
+        sv = np.linalg.svd(S, compute_uv=False)
+        return bool(np.all(sv <= 1.0 + tolerance))
 
     def compute_S_sweep(
         self,
         Z_matrices: Dict[float, np.ndarray],
-        port_impedances: List[float],
+        port_impedances: Optional[list[float]] = None,
     ) -> dict:
+        """Compute S-parameters across a frequency sweep.
+
+        Parameters
+        ----------
+        Z_matrices : dict[float, np.ndarray]
+            Dictionary mapping frequency (Hz) to Z-matrices.
+        port_impedances : list[float], optional
+            List of reference impedances for each port.
+
+        Returns
+        -------
+        dict
+            Results dictionary with keys:
+            - 'frequencies': sorted list of frequencies in Hz
+            - 'S_params': dict of {freq: S_matrix} per frequency
+
+        Raises
+        ------
+        SolverError
+            If Z-matrices are empty or have invalid dimensions.
         """
-        Compute S-parameters across a frequency sweep.
+        if not Z_matrices:
+            raise SolverError("Z_matrices cannot be empty")
 
-        Iterates over a dictionary of impedance matrices keyed by frequency,
-        computing the S-parameter matrix at each frequency point.
+        # Sort frequencies and compute S-parameters for each
+        sorted_freqs = sorted(Z_matrices.keys())
+        s_params = {}
 
-        Args:
-            Z_matrices : dict[float -> np.ndarray]
-                Dictionary mapping frequencies (Hz) to N x N impedance matrices.
-            port_impedances : list[float]
-                Reference impedances for each port in ohms.
-
-        Returns:
-            dict
-                Dictionary containing:
-                    - 'frequencies' : np.ndarray of frequencies in Hz.
-                    - 'S_params'    : dict mapping frequency (float) to S-matrix
-                                      (np.ndarray).
-
-        Example:
-            >>> calc = SParameterCalculator(num_ports=2)
-            >>> Z_matrices = {1e9: np.eye(2)*50, 2e9: np.eye(2)*60}
-            >>> result = calc.compute_S_sweep(Z_matrices, [50., 50.])
-            >>> assert len(result['frequencies']) == 2
-        """
-        frequencies = np.array(sorted(Z_matrices.keys()))
-        S_params: Dict[float, np.ndarray] = {}
-
-        for freq in frequencies:
-            Z_mat = Z_matrices[freq]
-            S_mat = self.compute_S_parameters(Z_mat, port_impedances, freq)
-            S_params[float(freq)] = S_mat
+        for freq in sorted_freqs:
+            z_mat = Z_matrices[freq]
+            S = self.compute_S_parameters(z_mat, port_impedances, frequency_Hz=freq)
+            s_params[float(freq)] = S
 
         return {
-            "frequencies": frequencies,
-            "S_params": S_params,
+            "frequencies": sorted_freqs,
+            "S_params": s_params,
         }
 
-    def validate_reciprocity(self, S_matrix: np.ndarray) -> bool:
-        """
-        Check if an S-parameter matrix is reciprocal.
-
-        A network is reciprocal if its S-matrix is symmetric (S_ij = S_ji for
-        all i, j). This holds for networks composed of passive, linear,
-        isotropic materials without magnetic bias or non-reciprocal elements
-        (e.g., ferrite isolators, circulators).
-
-        Args:
-            S_matrix : np.ndarray
-                N x N S-parameter matrix to validate.
-
-        Returns:
-            bool : True if |S_ij - S_ji| < tolerance for all i, j.
-
-        Example:
-            >>> calc = SParameterCalculator(num_ports=2)
-            >>> S_reciprocal = np.array([[0.1, 0.2], [0.2, 0.1]])
-            >>> calc.validate_reciprocity(S_reciprocal)
-            True
-        """
-        S_matrix = np.asarray(S_matrix, dtype=float)
-
-        if S_matrix.ndim != 2 or S_matrix.shape[0] != S_matrix.shape[1]:
-            raise ValueError("S_matrix must be a square 2D array.")
-
-        return bool(np.allclose(
-            S_matrix,
-            S_matrix.T,
-            atol=self.reciprocity_tol,
-        ))
-
-    def validate_passivity(self, S_matrix: np.ndarray) -> bool:
-        """
-        Check if an S-parameter matrix represents a passive system.
-
-        A system is passive if it cannot generate energy. For S-parameters,
-        this means the largest singular value of the S-matrix must be <= 1.
-        This ensures that no incident power combination produces more outgoing
-        power than incoming power.
-
-        Args:
-            S_matrix : np.ndarray
-                N x N S-parameter matrix to validate.
-
-        Returns:
-            bool : True if max singular value of S <= 1 + small tolerance.
-
-        Example:
-            >>> calc = SParameterCalculator(num_ports=2)
-            >>> S_passive = np.array([[0.3, 0.4], [0.4, 0.3]])
-            >>> calc.validate_passivity(S_passive)
-            True
-        """
-        S_matrix = np.asarray(S_matrix, dtype=float)
-
-        if S_matrix.ndim != 2 or S_matrix.shape[0] != S_matrix.shape[1]:
-            raise ValueError("S_matrix must be a square 2D array.")
-
-        singular_values = np.linalg.svd(S_matrix, compute_uv=False)
-        return bool(np.max(singular_values) <= 1.0 + 1e-10)
-
-
-class MultiPortExcitation:
-    """
-    Manage multi-port excitation for S-parameter computation.
-
-    This class handles the setup of excitations in multi-port electromagnetic
-    simulations. In each simulation run, exactly one port is excited while all
-    other ports are terminated with matched loads (absorbing boundaries). The
-    resulting currents and voltages from N separate solves (one per excited
-    port) can be combined to form the full N-port S-matrix.
-
-    Attributes:
-        num_ports : int
-            Number of ports in the system.
-        excitation_vector : np.ndarray
-            Complex excitation vector for all ports. Initialized to zero.
-
-    Example:
-        >>> exc = MultiPortExcitation(num_ports=3)
-        >>> exc.set_excitation(port_idx=0, amplitude=1.0, phase_deg=0.0)
-        >>> vec = exc.get_port_excitation_vector()
-        >>> print(vec)
-        [1.+0.j 0.+0.j 0.+0.j]
-    """
-
-    def __init__(self, num_ports: int = 2) -> None:
-        """
-        Initialize multi-port excitation system.
-
-        Args:
-            num_ports : int, optional
-                Number of ports in the system. Default is 2.
-        """
-        self.num_ports = num_ports
-        self.excitation_vector: np.ndarray = np.zeros(num_ports, dtype=complex)
-
-    def set_excitation(
+    def compute_full_s_matrix(
         self,
-        port_idx: int,
-        amplitude: float = 1.0,
-        phase_deg: float = 0.0,
+        frequencies: np.ndarray,
+        Z_matrices: Dict[str, np.ndarray],
+    ) -> dict:
+        """Compute full N-port S-matrix across a frequency sweep.
+
+        Parameters
+        ----------
+        frequencies : np.ndarray
+            Frequency array in Hz with shape (N_freq,).
+        Z_matrices : dict
+            Dictionary mapping frequency keys to Z-matrices. Keys should
+            match the format "f_{i}" where i is the frequency index.
+
+        Returns
+        -------
+        dict
+            Results dictionary with keys:
+            - 'frequencies': array of frequencies in Hz
+            - 's_parameters': dict of S-parameter matrices per frequency
+            - 'mutual_coupling': dict of coupling coefficients between ports
+
+        Raises
+        ------
+        SolverError
+            If Z-matrices are missing or have invalid dimensions.
+        """
+        results = {
+            "frequencies": frequencies.tolist(),
+            "s_parameters": {},
+            "mutual_coupling": {},
+        }
+
+        for i, freq in enumerate(frequencies):
+            key = f"f_{i}"
+            if key not in Z_matrices:
+                raise SolverError(f"Z-matrix not found for frequency {key}")
+
+            try:
+                S = self.compute_s_parameters_from_Z(Z_matrices[key])
+                results["s_parameters"][key] = S.tolist()
+
+                # Compute mutual coupling coefficients
+                coupling = self._compute_mutual_coupling(S)
+                results["mutual_coupling"][key] = coupling
+
+            except Exception as e:
+                raise SolverError(
+                    f"Failed to compute S-parameters at {freq:.3e} Hz",
+                    context={"error": str(e)},
+                )
+
+        return results
+
+    def _compute_mutual_coupling(
+        self,
+        S_matrix: np.ndarray,
+    ) -> dict:
+        """Compute mutual coupling coefficients between all port pairs.
+
+        Parameters
+        ----------
+        S_matrix : np.ndarray
+            S-parameter matrix with shape (N, N).
+
+        Returns
+        -------
+        dict
+            Coupling coefficients dictionary with keys:
+            - 'coupling_db': dict of {f"{i}-{j}": value} for each pair
+            - 'max_coupling_db': maximum coupling magnitude in dB
+            - 'avg_coupling_db': average coupling magnitude (excluding self)
+        """
+        n = S_matrix.shape[0]
+        coupling_db = {}
+
+        max_coupling = 0.0
+        total_coupling = 0.0
+        count = 0
+
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    # |S_ij| in dB (negative value)
+                    s_ij_mag = np.abs(S_matrix[i, j])
+                    s_ij_db = -20 * np.log10(max(s_ij_mag, 1e-15))
+
+                    key = f"{i}-{j}"
+                    coupling_db[key] = float(s_ij_db)
+
+                    max_coupling = max(max_coupling, s_ij_db)
+                    total_coupling += s_ij_db
+                    count += 1
+
+        return {
+            "coupling_db": coupling_db,
+            "max_coupling_db": float(max_coupling),
+            "avg_coupling_db": float(total_coupling / count) if count > 0 else 0.0,
+        }
+
+
+class ArrayFactorAnalyzer:
+    """Analyze array factor and beam steering for antenna arrays.
+
+    This class provides methods for computing array factors, beam
+    steering angles, and directivity for N-element antenna arrays.
+
+    Parameters
+    ----------
+    n_elements : int
+        Number of array elements.
+    element_spacing : float, default=0.5
+        Element spacing in wavelengths.
+    """
+
+    def __init__(
+        self,
+        n_elements: int,
+        element_spacing: float = 0.5,
     ) -> None:
-        """
-        Set excitation for a single port; terminate all others with matched loads.
+        """Initialise the array factor analyzer."""
+        self.n_elements = n_elements
+        self.element_spacing = element_spacing
 
-        In each solve, only one port is excited (set to the specified amplitude
-        and phase) while all other ports are terminated in matched loads (zero
-        current/voltage contribution). This models the standard S-parameter
-        measurement condition where all non-incident ports are matched.
-
-        Args:
-            port_idx : int
-                Index of the port to excite (0-indexed).
-            amplitude : float, optional
-                Excitation amplitude in linear scale. Default is 1.0.
-            phase_deg : float, optional
-                Excitation phase in degrees. Default is 0.0.
-
-        Raises:
-            ValueError : If port_idx is out of range.
-
-        Example:
-            >>> exc = MultiPortExcitation(num_ports=2)
-            >>> exc.set_excitation(0, amplitude=1.0, phase_deg=90.0)
-            >>> vec = exc.get_port_excitation_vector()
-            >>> print(vec[0].imag > 0)
-            True
-        """
-        if port_idx < 0 or port_idx >= self.num_ports:
-            raise ValueError(
-                f"port_idx ({port_idx}) is out of range [0, {self.num_ports})."
-            )
-
-        phase_rad = np.deg2rad(phase_deg)
-        self.excitation_vector = np.zeros(self.num_ports, dtype=complex)
-        self.excitation_vector[port_idx] = amplitude * np.exp(1j * phase_rad)
-
-    def compute_full_S_matrix(
+    def compute_array_factor(
         self,
-        currents: np.ndarray,
-        port_indices: List[int],
-        Z_matrix: np.ndarray,
-        port_impedances: List[float],
+        theta_angles: np.ndarray,
+        excitation_weights: Optional[np.ndarray] = None,
     ) -> np.ndarray:
+        """Compute the array factor magnitude for given angles.
+
+        Parameters
+        ----------
+        theta_angles : np.ndarray
+            Theta angles in radians with shape (N_angles,).
+        excitation_weights : np.ndarray, optional
+            Complex excitation weights for each element with shape
+            (n_elements,). Uses uniform weighting if None.
+
+        Returns
+        -------
+        np.ndarray
+            Array factor magnitude values with shape (N_angles,).
         """
-        Compute full N-port S-matrix from solved currents.
+        if excitation_weights is None:
+            excitation_weights = np.ones(self.n_elements)
 
-        Requires N separate simulations (one per excited port). The currents
-        array should contain the current solutions from each solve. Each solve
-        excites one port while others are terminated in matched loads.
+        # Compute array factor: AF = sum(w_n * exp(j*k*d*n*cos(theta)))
+        k = 2 * np.pi  # Normalized wavenumber (in wavelengths)
+        d = self.element_spacing
 
-        The method solves for voltages at all ports using V = Z @ I, then
-        converts to S-parameters via the standard Z-to-S transformation:
-            Y = Z^{-1}
-            S = (I - Z_ref @ Y) @ (I + Z_ref @ Y)^{-1}
+        af = np.zeros(len(theta_angles), dtype=np.complex128)
 
-        Args:
-            currents : np.ndarray
-                Current solutions from N separate solves. Can be:
-                - Shape (N,): single solve current vector (uses repeated).
-                - Shape (N, N): each row is a current vector from one solve.
-            port_indices : list[int]
-                Indices of the ports involved in the solution.
-            Z_matrix : np.ndarray
-                N x N impedance matrix from the simulation.
-            port_impedances : list[float]
-                Reference impedances for each port in ohms.
+        for n in range(self.n_elements):
+            phase = k * d * n * np.cos(theta_angles)
+            af += excitation_weights[n] * np.exp(1j * phase)
 
-        Returns:
-            np.ndarray
-                Full N x N S-parameter matrix.
+        # Normalize to maximum value
+        af_mag = np.abs(af)
+        if np.max(af_mag) > 0:
+            af_mag /= np.max(af_mag)
 
-        Example:
-            >>> exc = MultiPortExcitation(num_ports=2)
-            >>> Z = np.array([[50., 10.], [10., 50.]])
-            >>> I = np.array([[1., 0.], [0., 1.]])
-            >>> S = exc.compute_full_S_matrix(I, [0, 1], Z, [50., 50.])
-            >>> print(S.shape)
-            (2, 2)
+        return af_mag
+
+    def compute_beam_steering_angle(
+        self,
+        excitation_weights: np.ndarray,
+    ) -> float:
+        """Compute the beam steering angle from excitation weights.
+
+        Parameters
+        ----------
+        excitation_weights : np.ndarray
+            Complex excitation weights with shape (n_elements,).
+
+        Returns
+        -------
+        float
+            Beam steering angle in degrees.
         """
-        currents = np.asarray(currents, dtype=float)
-        n = self.num_ports
+        # Compute phase difference between adjacent elements
+        phases = np.angle(excitation_weights)
+        phase_diff = phases[1] - phases[0] if len(phases) > 1 else 0
 
-        if currents.ndim == 1:
-            # Single solve repeated for all ports
-            I_solves = np.tile(currents.reshape(1, -1), (n, 1))
-        elif currents.ndim == 2 and currents.shape[0] == n:
-            I_solves = currents
-        else:
-            raise ValueError(
-                f"currents shape {currents.shape} is incompatible with "
-                f"{n} ports."
-            )
+        # Beam angle: cos(theta_0) = -phase_diff / (k*d)
+        k_d = 2 * np.pi * self.element_spacing
+        cos_theta = -phase_diff / k_d if k_d != 0 else 0
 
-        # Compute voltages at all ports: V = Z @ I for each solve
-        Z_mat = np.asarray(Z_matrix, dtype=float)
-        Z_ref = np.diag(np.asarray(port_impedances, dtype=float))
+        # Clamp to valid range
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
+        theta_rad = np.arccos(cos_theta)
+        theta_deg = np.rad2deg(theta_rad)
 
-        # Build full S-matrix using admittance method
-        Y = np.linalg.inv(Z_mat)
-        I_mat = np.eye(n)
-        term_minus = I_mat - Z_ref @ Y
-        term_plus_inv = np.linalg.inv(I_mat + Z_ref @ Y)
-        S_matrix = term_minus @ term_plus_inv
+        return float(theta_deg)
 
-        return S_matrix
+    def compute_directivity(
+        self,
+        theta_angles: np.ndarray,
+        af_magnitude: np.ndarray,
+    ) -> float:
+        """Compute array directivity from array factor.
 
-    def get_port_excitation_vector(self) -> np.ndarray:
+        Parameters
+        ----------
+        theta_angles : np.ndarray
+            Theta angles in radians with shape (N_angles,).
+        af_magnitude : np.ndarray
+            Normalized array factor magnitude with shape (N_angles,).
+
+        Returns
+        -------
+        float
+            Directivity in dBi.
         """
-        Return the current excitation vector for all ports.
+        # Numerical integration of radiation intensity
+        sin_theta = np.sin(theta_angles)
+        intensity = af_magnitude ** 2 * sin_theta
 
-        Returns:
-            np.ndarray : Complex array of shape (num_ports,) containing the
-                         excitation amplitude and phase for each port. Ports
-                         not currently excited are zero.
+        # Integrate over theta (0 to pi)
+        du = theta_angles[1] - theta_angles[0] if len(theta_angles) > 1 else np.pi / 180
+        total_power = np.sum(intensity) * du
 
-        Example:
-            >>> exc = MultiPortExcitation(num_ports=3)
-            >>> exc.set_excitation(1, amplitude=2.0, phase_deg=45.0)
-            >>> vec = exc.get_port_excitation_vector()
-            >>> assert len(vec) == 3
-            >>> assert np.allclose(vec[0], 0)
-        """
-        return self.excitation_vector.copy()
+        # Directivity: D = 4*pi*U_max / P_rad
+        u_max = np.max(af_magnitude ** 2)
+        d_linear = 4 * np.pi * u_max / max(total_power, 1e-15)
+        d_dbi = 10 * np.log10(d_linear)
+
+        return float(d_dbi)

@@ -1,0 +1,27 @@
+# DeTaGrandMere — sample configuration file
+# Usage: python run.py simulate --config configs/antenna.yaml
+
+solver:
+  tolerance: 1.0e-6
+  max_iterations: 200
+  solver_type: "gmres"       # gmres | bicgstab
+
+mesh:
+  alpha_shape: 0.5
+  min_quality: 0.3
+  refinement_level: 2
+
+boundary:
+  types:
+    - "PEC"
+    - "absorbing"
+    - "symmetric"
+
+visualization:
+  backend: "matplotlib"
+  color_map: "viridis"
+  resolution: 150
+
+file_io:
+  output_format: "vtk"
+  output_dir: "./output"

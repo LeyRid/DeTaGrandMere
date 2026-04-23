@@ -37,19 +37,19 @@ from src.core.sparams_computation import (
 @pytest.fixture
 def calc_2port() -> SParameterCalculator:
     """A 2-port S-parameter calculator."""
-    return SParameterCalculator(num_ports=2)
+    return SParameterCalculator(n_ports=2)
 
 
 @pytest.fixture
 def calc_3port() -> SParameterCalculator:
     """A 3-port S-parameter calculator."""
-    return SParameterCalculator(num_ports=3)
+    return SParameterCalculator(n_ports=3)
 
 
 @pytest.fixture
 def exc_2port() -> MultiPortExcitation:
     """A 2-port multi-port excitation system."""
-    return MultiPortExcitation(num_ports=2)
+    return MultiPortExcitation(n_ports=2)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ def test_compute_S_parameters_single_frequency(calc_2port) -> None:
     )
 
     # Case 4: Verify that all S-parameter magnitudes are bounded for passive system
-    calc_3port = SParameterCalculator(num_ports=3)
+    calc_3port = SParameterCalculator(n_ports=3)
     Z_passive = np.array(
         [[55.0, 8.0, 5.0], [8.0, 55.0, 8.0], [5.0, 8.0, 55.0]], dtype=float
     )

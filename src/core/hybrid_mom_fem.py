@@ -1,472 +1,425 @@
-"""Hybrid Method of Moments / Finite Element Method (MoM-FEM) coupling framework.
+"""Hybrid MoM-FEM simulation framework for complex substrates.
 
-This module provides classes for coupling surface-based Method of Moments (MoM)
-formulations with volume-based Finite Element Method (FEM) formulations. The
-interface handles continuity enforcement at the MoM-FEM boundary and assembles
-the combined hybrid system.
+This module provides stub implementations for coupling Method of Moments
+(MoM) surface integral formulation with Finite Element Method (FEM)
+volume discretization. It supports:
 
-Key concepts:
-    - MoM: Integral equation method using surface currents on conductors.
-    - FEM: Differential equation method using volume elements for dielectric regions.
-    - Interface: Boundary faces where MoM surfaces meet FEM volumes.
-
-The coupling enforces continuity of tangential electric and magnetic fields
-across the interface, ensuring a physically consistent solution.
-
-Example usage::
-
-    from core.hybrid_mom_fem import MoMFEMInterface, FEMVolumeMesh
-    import numpy as np
-
-    # Define MoM surface triangles (e.g., antenna patches)
-    mom_triangles = [
-        [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
-        [(1, 0, 0), (1, 1, 0), (0, 1, 0)],
-    ]
-
-    # Define FEM volume tetrahedra (e.g., surrounding dielectric)
-    fem_vertices = [
-        [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
-        [1, 0, 1], [1, 1, 0], [1, 1, 1], [0, 1, 1],
-    ]
-    fem_tets = [(0, 1, 2, 3), (1, 4, 5, 6), ...]
-
-    # Create hybrid interface
-    interface = MoMFEMInterface(mom_triangles, fem_tets)
-    interface.identify_interface()
-
-    # Assemble and solve the combined system
-    mom_Z = np.eye(len(mom_triangles))  # MoM impedance matrix
-    fem_K = np.eye(8)                     # FEM stiffness matrix
-    coupling = interface.compute_coupling_matrix(mom_Z, fem_K)
-    system = interface.assemble_hybrid_system(mom_Z, fem_K, coupling)
+- Domain decomposition between MoM (open region) and FEM (dielectric volume)
+- Interface coupling via continuity conditions on tangential E and H fields
+- Material property handling at MoM-FEM interfaces
+- Combined linear system assembly for hybrid solve
 """
 
 from __future__ import annotations
 
 import numpy as np
-from typing import Optional
+from typing import Optional, List, Tuple, Dict
+
+from src.utils.errors import SolverError
 
 
 class MoMFEMInterface:
-    """Manages the coupling between MoM surface regions and FEM volume regions.
+    """Interface between MoM surface and FEM volume regions.
 
-    Handles identification of shared boundary faces, computation of coupling
-    matrices that enforce field continuity, and assembly of the combined
-    MoM-FEM linear system.
-
-    The interface enforces continuity of tangential electric (E_t) and magnetic
-    (H_t) fields across the MoM-FEM boundary using a weak formulation that
-    couples surface currents (MoM) with volume field expansions (FEM).
+    This class manages the coupling boundary between the Method of Moments
+    (surface integral) region and the Finite Element Method (volume integral)
+    region. It enforces continuity conditions on tangential electric and
+    magnetic fields at the interface.
 
     Parameters
     ----------
-    mom_region_triangles : list
-        List of triangular faces defining the MoM surface region. Each triangle
-        is represented as a list/tuple of three vertex indices or coordinate
-        triples. Shape: N_mom triangles.
-    fem_region_elements : list
-        List of tetrahedral elements defining the FEM volume region. Each
-        tetrahedron is represented as a list/tuple of four vertex indices.
-        Shape: N_fem tetrahedra.
-
-    Attributes
-    ----------
-    mom_region_triangles : list
-        MoM surface triangle definitions.
-    fem_region_elements : list
-        FEM volume element definitions.
-    interface_faces : list[int] or None
-        Indices of boundary faces identified as MoM-FEM interface.
-        Set by ``identify_interface()``.
-
-    Examples
-    --------
-    >>> mom_tris = [[0, 1, 2], [1, 2, 3]]
-    >>> fem_tets = [(0, 1, 2, 4), (1, 2, 3, 5)]
-    >>> iface = MoMFEMInterface(mom_tris, fem_tets)
-    >>> iface.identify_interface()
+    interface_surface : np.ndarray, optional
+        Coordinates defining the MoM-FEM interface boundary with shape
+        (N_interface_points, 3). If None, will be computed from geometry.
     """
 
-    def __init__(
+    def __init__(self, interface_surface: Optional[np.ndarray] = None) -> None:
+        """Initialise the MoM-FEM interface."""
+        self.interface_surface = interface_surface
+        self.interface_normal: Optional[np.ndarray] = None
+        self.mom_region: Optional[dict] = None
+        self.fem_region: Optional[dict] = None
+
+    def identify_interface(
         self,
-        mom_region_triangles: list,
-        fem_region_elements: list,
-    ) -> None:
-        self.mom_region_triangles = mom_region_triangles
-        self.fem_region_elements = fem_region_elements
-        self.interface_faces: Optional[list] = None
+        mom_mesh: np.ndarray,
+        fem_mesh: np.ndarray,
+    ) -> np.ndarray:
+        """Identify the coupling interface between MoM and FEM regions.
 
-    def identify_interface(self) -> list[int]:
-        """Identify boundary faces where MoM surfaces meet FEM volumes.
+        Parameters
+        ----------
+        mom_mesh : np.ndarray
+            MoM surface mesh vertices with shape (N_mom, 3).
+        fem_mesh : np.ndarray
+            FEM volume mesh vertices with shape (N_fem, 3).
 
-        Finds shared faces between the MoM triangle set and the FEM tetrahedron
-        mesh by matching vertex indices. These shared faces constitute the
-        coupling interface where tangential field continuity must be enforced.
+        Returns
+        -------
+        np.ndarray
+            Interface boundary points with shape (N_interface, 3).
+        """
+        # Find common vertices between MoM surface and FEM volume
+        # In full implementation, this would use spatial hashing for efficiency
+        interface_points = []
 
-    Returns
-    -------
-    list[int]
-        List of face indices that lie on the MoM-FEM boundary. If no
-        shared faces exist, returns an empty list. Each index refers to
-        the position in ``self.mom_region_triangles``.
+        for mom_vert in mom_mesh:
+            for fem_vert in fem_mesh:
+                dist = np.linalg.norm(mom_vert - fem_vert)
+                if dist < 1e-6:  # Within tolerance
+                    interface_points.append(mom_vert)
+                    break
 
-    Notes
-    -----
-    A face is considered part of the interface if:
-        1. It appears as a face of at least one FEM tetrahedron (by vertex indices).
-        2. It belongs to the MoM triangle set.
+        self.interface_surface = np.array(interface_points) if interface_points else None
 
-    The algorithm builds a hash of sorted vertex tuples from both sets and
-    finds the intersection.
-    """
-        # Build set of MoM faces as sorted frozensets of vertex indices
-        mom_face_set = set()
-        for i, tri in enumerate(self.mom_region_triangles):
-            face_key = tuple(sorted(tri))
-            mom_face_set.add(face_key)
-
-        # Build set of FEM face tuples from tetrahedra
-        fem_faces = set()
-        for tet_idx, tet in enumerate(self.fem_region_elements):
-            # Each tetrahedron has 4 triangular faces
-            faces = [
-                (tet[0], tet[1], tet[2]),
-                (tet[0], tet[2], tet[3]),
-                (tet[0], tet[3], tet[1]),
-                (tet[1], tet[3], tet[2]),
-            ]
-            for face in faces:
-                fem_faces.add(tuple(sorted(face)))
-
-        # Find intersection
-        interface_keys = mom_face_set & fem_faces
-
-        # Map back to MoM indices
-        interface_indices = []
-        for i, tri in enumerate(self.mom_region_triangles):
-            if tuple(sorted(tri)) in interface_keys:
-                interface_indices.append(i)
-
-        self.interface_faces = interface_indices
-        return interface_indices
+        return self.interface_surface or np.zeros((0, 3))
 
     def compute_coupling_matrix(
         self,
-        mom_Z: np.ndarray,
-        fem_K: np.ndarray,
+        mom_basis_functions: list,
+        fem_shape_functions: list,
     ) -> np.ndarray:
-        """Compute the coupling matrix between MoM surfaces and FEM volumes.
-
-        Computes the block of the combined system that couples MoM surface
-        currents to FEM volume field degrees of freedom. The coupling enforces
-        continuity of tangential E and H fields across the interface.
-
-        The coupling matrix C has shape (N_mom_coupled, N_fem_coupled) where
-        the coupled rows/columns correspond to interface faces/elements.
+        """Compute coupling matrix between MoM and FEM basis functions.
 
         Parameters
         ----------
-        mom_Z : np.ndarray
-            MoM impedance matrix of shape (N_mom, N_mom). Represents the
-            integral equation operator on the surface mesh.
-        fem_K : np.ndarray
-            FEM stiffness matrix of shape (N_fem_dof, N_fem_dof). Represents
-            the differential equation operator on the volume mesh.
+        mom_basis_functions : list[RWGBasisFunction]
+            RWG basis functions on the MoM surface.
+        fem_shape_functions : list
+            FEM shape functions on the volume mesh.
 
-    Returns
-    -------
-    np.ndarray
-        Coupling matrix of shape (n_interface_mom, n_interface_fem) where
-        n_interface_mom is the number of interface faces and n_interface_fem
-        depends on the FEM discretization. Returns a zero matrix if no
-        interface is identified.
+        Returns
+        -------
+        np.ndarray
+            Coupling matrix C with shape (N_mom, N_fem).
 
-    Notes
-    -----
-    The coupling enforces:
-        n_hat x E_t^MoM = n_hat x E_t^FEM   (tangential E continuity)
-        n_hat x H_t^MoM = n_hat x H_t^FEM  (tangential H continuity)
+        Raises
+        ------
+        SolverError
+            If interface is not defined or basis function counts mismatch.
+        """
+        if self.interface_surface is None:
+            raise SolverError("Interface not identified; call identify_interface() first")
 
-    In practice, this is implemented through a weak form where test functions
-    from both sides are used to construct the coupling blocks.
-    """
-        if self.interface_faces is None:
-            return np.zeros((0, 0), dtype=np.complex128)
+        n_mom = len(mom_basis_functions)
+        n_fem = len(fem_shape_functions)
 
-        n_interface = len(self.interface_faces)
-        n_fem_dof = fem_K.shape[0]
+        # Compute coupling matrix (stub: simplified diagonal approximation)
+        C = np.zeros((n_mom, n_fem), dtype=np.complex128)
 
-        # Build coupling matrix based on interface face connectivity
-        # Each interface face couples one MoM current to FEM edge/face DOFs
-        coupling = np.zeros((n_interface, n_fem_dof), dtype=np.complex128)
+        for i, bf in enumerate(mom_basis_functions):
+            # Find FEM shape functions near the MoM basis support
+            for j, sf in enumerate(fem_shape_functions):
+                # Simplified: couple based on proximity to interface
+                if bf.support_size > 0 and sf.support_size > 0:
+                    dist = np.linalg.norm(bf.centroid - sf.centroid)
+                    if dist < 1e-3:  # Within coupling range
+                        C[i, j] = 1.0 / (dist + 1e-10)
 
-        for i, tri_idx in enumerate(self.interface_faces):
-            tri = self.mom_region_triangles[tri_idx]
-            # Map MoM face to corresponding FEM degrees of freedom
-            # Simplified: use vertex indices as DOF identifiers
-            for vert_idx in tri:
-                if vert_idx < n_fem_dof:
-                    coupling[i, vert_idx] = 1.0
+        return C
 
-        return coupling
-
-    def assemble_hybrid_system(
+    def enforce_continuity(
         self,
-        mom_Z: np.ndarray,
-        fem_K: np.ndarray,
-        coupling_matrix: np.ndarray,
-    ) -> np.ndarray:
-        """Assemble the combined MoM-FEM linear system with interface terms.
-
-        Constructs the block matrix::
-
-            | Z_mm   0     C_mf |   | I_m |   | V_m |
-            | 0      K_ff  C_f  | * | I_f | = | V_f |
-            | C_ft   C_f^T  0    |   |  lambda|   |  0  |
-
-        where:
-            Z_mm : MoM impedance matrix (surface-surface)
-            K_ff : FEM stiffness matrix (volume-volume)
-            C_mf : coupling from MoM to FEM
-            C_f  : coupling constraint terms
-            I_m  : unknown surface currents
-            I_f  : unknown volume field coefficients
-            lambda : Lagrange multipliers enforcing continuity
+        E_mom: np.ndarray,
+        E_fem: np.ndarray,
+        tolerance: float = 1e-6,
+    ) -> bool:
+        """Enforce tangential E-field continuity at the MoM-FEM interface.
 
         Parameters
-          ----------
-    mom_Z : np.ndarray
-        MoM impedance matrix of shape (N_mom, N_mom).
-    fem_K : np.ndarray
-        FEM stiffness matrix of shape (N_fem_dof, N_fem_dof).
-    coupling_matrix : np.ndarray
-        Precomputed coupling matrix from ``compute_coupling_matrix()``.
+        ----------
+        E_mom : np.ndarray
+            Electric field from MoM solution at interface with shape (N_interface, 3).
+        E_fem : np.ndarray
+            Electric field from FEM solution at interface with shape (N_interface, 3).
+        tolerance : float, default=1e-6
+            Acceptable mismatch for continuity.
 
-    Returns
-    -------
-    np.ndarray
-        Assembled block system matrix. Shape depends on the sizes of
-        mom_Z and fem_K plus the number of interface constraints.
+        Returns
+        -------
+        bool
+            True if continuity is satisfied within tolerance.
+        """
+        if self.interface_surface is None:
+            return False
 
-    Notes
-    -----
-    The assembled system is typically solved using a block preconditioner
-    or by eliminating the Lagrange multipliers to obtain a reduced system:
+        # Compute tangential component of E fields
+        E_mom_tan = self._get_tangential_component(E_mom, self.interface_normal)
+        E_fem_tan = self._get_tangential_component(E_fem, self.interface_normal)
 
-        | Z_mm   C_mf |   | I_m  |   | V_m  |
-        | C_ft   K_ff | * | I_f  | = | V_f  |
-    """
-        n_mom = mom_Z.shape[0]
-        n_fem = fem_K.shape[0]
+        # Check continuity (L2 norm of difference)
+        diff = np.linalg.norm(E_mom_tan - E_fem_tan, axis=1)
+        max_diff = np.max(diff) if len(diff) > 0 else 0.0
 
-        # Determine interface size
-        if coupling_matrix is not None and coupling_matrix.size > 0:
-            n_interface = coupling_matrix.shape[0]
-        else:
-            n_interface = 0
+        return max_diff <= tolerance
 
-        total_size = n_mom + n_fem + n_interface
+    def _get_tangential_component(
+        self,
+        E: np.ndarray,
+        normal: np.ndarray,
+    ) -> np.ndarray:
+        """Extract tangential component of electric field from total field.
 
-        # Assemble block system
-        system = np.zeros((total_size, total_size), dtype=np.complex128)
+        Parameters
+        ----------
+        E : np.ndarray
+            Total electric field with shape (N_points, 3).
+        normal : np.ndarray
+        Interface normal vector with shape (3,).
 
-        # MoM block
-        system[:n_mom, :n_mom] = mom_Z
+        Returns
+        -------
+        np.ndarray
+            Tangential electric field component.
+        """
+        # Project out the normal component: E_tan = E - (E·n)*n/|n|^2
+        n_hat = normal / (np.linalg.norm(normal) + 1e-10)
+        normal_component = np.sum(E * n_hat[np.newaxis, :], axis=1)[:, np.newaxis]
+        E_tan = E - normal_component * n_hat[np.newaxis, :]
 
-        # FEM block
-        system[n_mom:n_mom + n_fem, n_mom:n_mom + n_fem] = fem_K
-
-        # Coupling blocks
-        if coupling_matrix is not None and coupling_matrix.shape[0] > 0:
-            n_coup = coupling_matrix.shape[0]
-            # C_mf: MoM -> interface (rows are interface constraints)
-            system[n_mom + n_fem:n_mom + n_fem + n_coup, :n_mom] = \
-                np.zeros((n_coup, n_mom), dtype=np.complex128)
-
-            # C_ft: interface -> FEM (transpose of coupling)
-            system[n_mom + n_fem:n_mom + n_fem + n_coup, n_mom:n_mom + n_fem] = \
-                coupling_matrix
-
-        return system
+        return E_tan
 
 
 class FEMVolumeMesh:
-    """Finite Element volume mesh from tetrahedral elements.
+    """FEM volume mesh for dielectric regions.
 
-    Represents a volumetric discretization using tetrahedral elements. Provides
-    methods for computing element-level stiffness matrices and assembling the
-    global FEM system.
-
-    Each tetrahedron is defined by four vertex indices into the vertices array,
-    forming a 3D mesh suitable for solving Maxwell's equations via the FEM.
+    This class represents the finite element volume mesh used to discretize
+    dielectric substrates and other volumetric regions in hybrid MoM-FEM
+    simulations. It supports tetrahedral elements with hexahedral fallback.
 
     Parameters
     ----------
-    vertices : np.ndarray
-        Array of mesh vertex coordinates of shape (N_vertices, 3).
-    tetrahedra : list
-        List of tetrahedral elements, each a tuple/list of four vertex indices.
-
-    Attributes
-    ----------
-    vertices : np.ndarray (N_vertices, 3)
-        Mesh vertex coordinates.
-    tetrahedra : list
-        Tetrahedral element connectivity.
-    n_tetrahedra : int
-        Number of tetrahedral elements.
-    n_vertices : int
-        Number of mesh vertices.
-
-    Examples
-    --------
-    >>> verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    >>> tets = [(0, 1, 2, 3)]
-    >>> mesh = FEMVolumeMesh(verts, tets)
-    >>> K = mesh.compute_stiffness_matrix(material_eps=5.0, material_mu=1.0)
+    vertices : np.ndarray, optional
+        Mesh vertex coordinates with shape (N_vertices, 3).
+    tetrahedra : np.ndarray, optional
+        Tetrahedron connectivity array with shape (N_tets, 4) of vertex indices.
     """
 
     def __init__(
         self,
-        vertices: np.ndarray,
-        tetrahedra: list,
+        vertices: Optional[np.ndarray] = None,
+        tetrahedra: Optional[np.ndarray] = None,
     ) -> None:
-        self.vertices = np.asarray(vertices, dtype=np.float64)
+        """Initialise the FEM volume mesh."""
+        self.vertices = vertices
         self.tetrahedra = tetrahedra
-        self.n_tetrahedra = len(tetrahedra)
-        self.n_vertices = len(self.vertices)
 
-    def compute_stiffness_matrix(
-        self,
-        material_eps: float,
-        material_mu: float,
-    ) -> np.ndarray:
-        """Compute the FEM stiffness matrix K for the volume mesh.
+    def compute_volume(self) -> float:
+        """Compute the total volume of the FEM mesh.
 
-        Assembles the global stiffness matrix by summing element contributions
-        from each tetrahedron. The element stiffness matrix is derived from
-        the weak form of Maxwell's equations:
+        Returns
+        -------
+        float
+            Total volume in cubic meters.
+        """
+        if self.vertices is None or self.tetrahedra is None:
+            return 0.0
 
-            integral( grad(w) . (mu^{-1} grad(u)) dV ) +
-            omega^2 * integral( w . (eps * u) dV ) = integral( w . J dV )
-
-        For each tetrahedron, the element matrix is computed using linear
-        shape functions and integrated using Gaussian quadrature.
-
-        Parameters
-        ----------
-        material_eps : float
-            Relative permittivity of the volume material (dimensionless).
-        material_mu : float
-            Relative permeability of the volume material (dimensionless).
-
-    Returns
-    -------
-    np.ndarray
-        Global stiffness matrix of shape (N_vertices, N_vertices). Contains
-        contributions from all tetrahedral elements assembled into the global
-        system. Diagonal entries represent self-coupling; off-diagonal entries
-        represent coupling between vertex degrees of freedom.
-
-    Notes
-    -----
-    - Linear tetrahedral elements with 4 nodes per element.
-    - Integration uses a 4-point Gaussian rule per tetrahedron.
-    - Material properties are assumed uniform across the volume.
-    """
-        n_dof = self.n_vertices
-        K = np.zeros((n_dof, n_dof), dtype=np.complex128)
-
-        # Tetrahedral element integration points (normalized coordinates)
-        gauss_pts = np.array([
-            [0.25, 0.25, 0.25],
-            [0.25, 0.25, 0.25],
-            [0.25, 0.25, 0.25],
-            [0.25, 0.25, 0.25],
-        ])
-        gauss_wts = np.array([1.0 / 8.0] * 4)
-
-        # Material contribution factor (simplified scalar model)
-        eps_factor = material_eps
-        mu_inv = 1.0 / max(material_mu, 1e-15)
-
+        total_volume = 0.0
         for tet in self.tetrahedra:
-            node_indices = list(tet[:4])
-            n_nodes = len(node_indices)
-
-            # Compute element volume (signed)
+            # Compute volume of each tetrahedron using determinant formula
             v0 = self.vertices[tet[0]]
             v1 = self.vertices[tet[1]]
             v2 = self.vertices[tet[2]]
             v3 = self.vertices[tet[3]]
 
-            vol = abs(np.dot(v1 - v0, np.cross(v2 - v0, v3 - v0))) / 6.0
+            # Volume = (1/6) * det(v1-v0, v2-v0, v3-v0)
+            d1 = v1 - v0
+            d2 = v2 - v0
+            d3 = v3 - v0
+            vol = abs(np.dot(d1, np.cross(d2, d3))) / 6.0
 
-            if vol < 1e-15:
-                continue
+            total_volume += vol
 
-            # Element stiffness contribution (simplified)
-            for i in range(n_nodes):
-                for j in range(n_nodes):
-                    # Self-coupling and cross-coupling terms
-                    if i == j:
-                        K[node_indices[i], node_indices[j]] += \
-                            eps_factor * vol / n_nodes
-                    else:
-                        K[node_indices[i], node_indices[j]] += \
-                            -0.5 * mu_inv * vol / (n_nodes * (n_nodes - 1))
+        return total_volume
 
-        return K
+    def get_element_properties(
+        self,
+        material: object,
+        frequency: float,
+    ) -> dict:
+        """Get material properties for each FEM element.
+
+        Parameters
+        ----------
+        material : object
+            Material instance (may be dispersive or anisotropic).
+        frequency : float
+            Operating frequency in Hz.
+
+        Returns
+        -------
+        dict
+            Element property dictionary with keys:
+            - 'epsilon_r': relative permittivity per element
+            - 'mu_r': relative permeability per element
+            - 'sigma': conductivity per element
+        """
+        # In full implementation, this would evaluate material properties
+        # at the centroid of each tetrahedral element
+
+        n_elements = len(self.tetrahedra) if self.tetrahedra is not None else 0
+
+        return {
+            "epsilon_r": np.ones(n_elements) * getattr(material, "eps_r", 1.0),
+            "mu_r": np.ones(n_elements) * getattr(material, "mu_r", 1.0),
+            "sigma": np.zeros(n_elements),
+        }
 
 
-if __name__ == "__main__":
-    print("=" * 60)
-    print("Hybrid MoM-FEM Module - Example Usage")
-    print("=" * 60)
+class HybridMoMFEMSolver:
+    """Hybrid MoM-FEM solver for complex substrate simulations.
 
-    # --- MoMFEMInterface ---
-    mom_triangles = [
-        [0, 1, 2],   # Face 0: shared with FEM tet 0
-        [1, 2, 3],   # Face 1: shared with FEM tet 1
-        [0, 1, 3],   # Face 2: not shared
-    ]
+    This class orchestrates the combined MoM-FEM solve by assembling
+    separate MoM and FEM subsystems and coupling them through interface
+    conditions. It supports both monolithic and iterative solution strategies.
 
-    fem_tets = [
-        (0, 1, 2, 4),  # Tet 0: has face {0,1,2}
-        (1, 2, 3, 5),  # Tet 1: has face {1,2,3}
-    ]
+    Parameters
+    ----------
+    frequency : float, optional
+        Operating frequency in Hz.
+    solver_strategy : str, default="monolithic"
+        Solution strategy: "monolithic" or "iterative".
+    """
 
-    interface = MoMFEMInterface(mom_triangles, fem_tets)
-    shared = interface.identify_interface()
-    print(f"\n[MoMFEMInterface] Shared interface faces: {shared}")
+    def __init__(
+        self,
+        frequency: Optional[float] = None,
+        solver_strategy: str = "monolithic",
+    ) -> None:
+        """Initialise the hybrid MoM-FEM solver."""
+        self.frequency = frequency or 1e9
+        self.solver_strategy = solver_strategy
+        self.interface: Optional[MoMFEMInterface] = None
+        self.mom_solver = None  # MOMSolver instance
+        self.fem_mesh: Optional[FEMVolumeMesh] = None
 
-    # Compute coupling matrix
-    n_mom = len(mom_triangles)
-    n_fem = 6  # hypothetical FEM DOFs
-    mom_Z = np.eye(n_mom, dtype=np.complex128) * (1.0 + 0.1j)
-    fem_K = np.eye(n_fem, dtype=np.complex128) * (2.0 + 0.2j)
+    def assemble_hybrid_system(
+        self,
+        Z_mom: np.ndarray,
+        K_fem: np.ndarray,
+        C_coupling: np.ndarray,
+    ) -> np.ndarray:
+        """Assemble the combined MoM-FEM linear system.
 
-    coupling = interface.compute_coupling_matrix(mom_Z, fem_K)
-    print(f"[MoMFEMInterface] Coupling matrix shape: {coupling.shape}")
+        Parameters
+        ----------
+        Z_mom : np.ndarray
+            MoM impedance matrix with shape (N_mom, N_mom).
+        K_fem : np.ndarray
+            FEM stiffness matrix with shape (N_fem, N_fem).
+        C_coupling : np.ndarray
+            Interface coupling matrix with shape (N_mom, N_fem).
 
-    # Assemble hybrid system
-    system = interface.assemble_hybrid_system(mom_Z, fem_K, coupling)
-    print(f"[MoMFEMInterface] Hybrid system shape: {system.shape}, "
-          f"norm={np.linalg.norm(system):.6e}")
+        Returns
+        -------
+        np.ndarray
+            Combined system matrix with shape (N_total, N_total) where
+            N_total = N_mom + N_fem.
+        """
+        n_mom, _ = Z_mom.shape
+        _, n_fem = K_fem.shape
 
-    # --- FEMVolumeMesh ---
-    vertices = np.array([
-        [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
-        [1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 1, 1],
-    ])
+        # Assemble block matrix:
+        # [ Z_mom    C       ] [ I_mom   ]   = [ V_mom   ]
+        # [ C^T      K_fem   ] [ I_fem   ]   = [ 0       ]
 
-    tetrahedra = [
-        (0, 1, 2, 3),   # Tet 0: original corner
-        (1, 4, 5, 6),   # Tet 1: another corner
-    ]
+        N_total = n_mom + n_fem
+        Z_hybrid = np.zeros((N_total, N_total), dtype=np.complex128)
 
-    mesh = FEMVolumeMesh(vertices, tetrahedra)
-    K = mesh.compute_stiffness_matrix(material_eps=5.0, material_mu=1.0)
-    print(f"\n[FEMVolumeMesh] Stiffness matrix shape: {K.shape}, "
-          f"trace={np.trace(K):.6f}")
+        # MoM block
+        Z_hybrid[:n_mom, :n_mom] = Z_mom
+
+        # Coupling blocks
+        Z_hybrid[:n_mom, n_mom:] = C_coupling
+        Z_hybrid[n_mom:, :n_mom] = C_coupling.T
+
+        # FEM block
+        Z_hybrid[n_mom:, n_mom:] = K_fem
+
+        return Z_hybrid
+
+    def solve_hybrid(
+        self,
+        Z_hybrid: np.ndarray,
+        V_rhs: np.ndarray,
+        tolerance: float = 1e-6,
+    ) -> dict:
+        """Solve the hybrid MoM-FEM system.
+
+        Parameters
+        ----------
+        Z_hybrid : np.ndarray
+            Combined system matrix.
+        V_rhs : np.ndarray
+            Right-hand side vector.
+        tolerance : float, default=1e-6
+            Convergence tolerance for iterative solve.
+
+        Returns
+        -------
+        dict
+            Solution dictionary with keys:
+            - 'I_mom': MoM current solution
+            - 'I_fem': FEM current solution
+            - 'E_field_total': Total electric field at observation points
+            - 'convergence': bool indicating successful convergence
+        """
+        # Solve the combined system
+        try:
+            I_total = np.linalg.solve(Z_hybrid, V_rhs)
+        except np.linalg.LinAlgError:
+            # Fallback to iterative solve if direct solve fails
+            from scipy.sparse.linalg import gmres
+
+            I_total, info = gmres(Z_hybrid, V_rhs, tol=tolerance)
+            if info != 0:
+                raise SolverError(
+                    f"Hybrid solver failed to converge (info={info})",
+                    context={"tolerance": tolerance},
+                )
+
+        n_mom = Z_hybrid.shape[0] - Z_hybrid.shape[1] // 2  # Approximate
+        I_mom = I_total[:n_mom] if n_mom > 0 else np.array([])
+        I_fem = I_total[n_mom:] if len(I_total) > n_mom else np.array([])
+
+        return {
+            "I_mom": I_mom,
+            "I_fem": I_fem,
+            "E_field_total": self._compute_total_field(I_mom, I_fem),
+            "convergence": True,
+        }
+
+    def _compute_total_field(
+        self,
+        I_mom: np.ndarray,
+        I_fem: np.ndarray,
+    ) -> np.ndarray:
+        """Compute total electric field from MoM and FEM solutions.
+
+        Parameters
+        ----------
+        I_mom : np.ndarray
+            MoM current solution.
+        I_fem : np.ndarray
+            FEM current solution.
+
+        Returns
+        -------
+        np.ndarray
+            Total electric field at observation points.
+        """
+        # In full implementation, this would compute fields from both
+        # MoM surface currents and FEM volume currents using appropriate
+        # Green's functions for each region
+
+        n_obs = max(len(I_mom), len(I_fem))
+        E_total = np.zeros((n_obs, 3), dtype=np.complex128)
+
+        # Simplified: sum contributions from both regions
+        if len(I_mom) > 0:
+            E_total += I_mom[:, np.newaxis] * 0.5
+        if len(I_fem) > 0:
+            E_total += I_fem[:, np.newaxis] * 0.3
+
+        return E_total

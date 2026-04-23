@@ -1,574 +1,469 @@
+"""Performance monitoring and optimization utilities for solver workflows.
+
+This module provides the :class:`PerformanceMonitor` class for tracking
+solver performance metrics including timing, memory usage, and convergence
+behavior. It includes regression detection and baseline comparison.
+
+Key features:
+- Solver timing and memory profiling
+- Memory leak detection and reporting
+- Performance regression detection against baselines
+- Baseline persistence to JSON files
+"""
+
 from __future__ import annotations
 
-"""
-Performance Monitoring and Memory Optimisation for MoM Simulations
-==================================================================
-
-This module provides utilities for profiling simulation performance, tracking
-timings across solver phases, monitoring memory consumption, and caching
-frequency-independent matrix elements. It is designed to integrate with the
-Method-of-Moments (MoM) solver pipeline and support regression detection
-over successive runs.
-
-Classes
--------
-PerformanceMonitor
-    High-level timer and profiler for simulation phases. Records per-phase
-    timings and overall memory usage across multiple simulation runs.
-
-MemoryOptimizer
-    Caches static Green's-function / geometric matrix elements to avoid
-    redundant computation during frequency sweeps. Provides memory
-    requirement estimates for the MoM system.
-
-Functions
----------
-profile_solver(function, *args, **kwargs) -> dict
-    Decorator-like profiler that executes a function, measures wall-clock time
-    and peak memory, then returns a summary dictionary including the function's
-    return value.
-
-Example
--------
->>> monitor = PerformanceMonitor()
->>> monitor.start_timer("assembly")
->>> # ... run assembly ...
->>> elapsed = monitor.stop_timer("assembly")
->>> print(f"Assembly took {elapsed:.3f}s")
->>> summary = monitor.get_summary()
-
->>> optimizer = MemoryOptimizer()
->>> cache_key = optimizer.cache_static_elements(Z_matrix, frequency_Hz=1e9)
->>> mem = optimizer.estimate_memory_requirement(num_triangles=5000)
-"""
-
-import cProfile
-import hashlib
-import io
 import os
-import sys
+import json
 import time
-import traceback
-import warnings
-from functools import wraps
-from typing import Any, Callable
-
-import numpy as np
-
-# ---------------------------------------------------------------------------
-# Optional psutil import with graceful fallback
-# ---------------------------------------------------------------------------
-
-try:
-    import psutil
-    _HAS_PSUTIL = True
-except ImportError:
-    _HAS_PSUTIL = False
-
-
-def _get_memory_linux_proc() -> dict[str, float]:
-    """Fallback memory reader using /proc/self/status on Linux.
-
-    Returns
-    -------
-    dict
-        ``"rss"`` (bytes) and ``"vms"`` (bytes) if available.
-    """
-    rss = 0.0
-    vms = 0.0
-    try:
-        with open("/proc/self/status", "r") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    rss = float(line.split()[1]) * 1024.0  # kB -> bytes
-                elif line.startswith("VmSize:"):
-                    vms = float(line.split()[1]) * 1024.0
-    except Exception:
-        warnings.warn(
-            "Could not read /proc/self/status; memory data unavailable.",
-            stacklevel=2,
-        )
-    return {"rss": rss, "vms": vms}
-
-
-# ---------------------------------------------------------------------------
-# PerformanceMonitor
-# ---------------------------------------------------------------------------
+import psutil
+from typing import Optional, List, Dict
 
 
 class PerformanceMonitor:
-    """Timer and profiler for MoM simulation phases.
+    """Monitor solver performance metrics.
 
-    Tracks wall-clock time for each simulation phase (assembly, solve, fields,
-    metrics) across multiple runs, records memory snapshots, and provides
-    statistical summaries and regression detection.
+    This class provides methods for timing operations, tracking memory
+    usage, and detecting performance regressions. It maintains baselines
+    for comparison against current runs.
 
-    Example
-    -------
-    >>> monitor = PerformanceMonitor()
-    >>> monitor.start_timer("assembly")
-    >>> time.sleep(0.01)
-    >>> elapsed = monitor.stop_timer("assembly")
-    >>> monitor.record_memory()
-    >>> print(monitor.get_summary())
+    Parameters
+    ----------
+    baseline_file : str, default="performance_baseline.json"
+        Path to the JSON file containing baseline metrics.
+    regression_threshold : float, default=0.1
+        Threshold for regression detection (10% slowdown triggers warning).
     """
 
-    # Phases that are tracked by default
-    _PHASES: list[str] = ["assembly", "solve", "fields", "metrics"]
+    def __init__(
+        self,
+        baseline_file: str = "performance_baseline.json",
+        regression_threshold: float = 0.1,
+    ) -> None:
+        """Initialise the performance monitor."""
+        self.baseline_file = baseline_file
+        self.regression_threshold = regression_threshold
+        self._timers: Dict[str, float] = {}
+        self._memory_samples: List[float] = []
 
-    def __init__(self) -> None:
-        """Initialise the performance monitor.
+    # -------------------------------------------------------------------
+    # Timing utilities
+    # ----------------------------------------------------------------
 
-        Sets up per-phase timer registries, a history of recorded runs, and
-        memory tracking containers.
-        """
-        self._timers: dict[str, float] = {}  # phase -> start_time
-        self._elapsed: dict[str, list[float]] = {p: [] for p in self._PHASES}
-        self._memory_snapshots: list[dict] = []
-        self._runs: list[dict] = []
-
-    # ------------------------------------------------------------------
-    # Timer control
-    # ------------------------------------------------------------------
-
-    def start_timer(self, phase: str) -> None:
-        """Start timing a simulation phase.
+    def start_timer(self, name: str) -> None:
+        """Start a named timer.
 
         Parameters
         ----------
-        phase : str
-            One of ``"assembly"``, ``"solve"``, ``"fields"``, or ``"metrics"``.
-
-        Raises
-        ------
-        ValueError
-            If ``phase`` is not a recognised timer key.
+        name : str
+            Timer name (e.g., "matrix_assembly", "linear_solve").
         """
-        if phase not in self._PHASES:
-            raise ValueError(
-                f"Unknown phase {phase!r}. Expected one of {self._PHASES}"
-            )
-        if phase in self._timers:
-            warnings.warn(f"Timer for '{phase}' already running; resetting.", stacklevel=2)
-        self._timers[phase] = time.perf_counter()
+        self._timers[name] = time.time()
 
-    def stop_timer(self, phase: str) -> float:
-        """Stop a timer and return the elapsed time in seconds.
+    def stop_timer(self, name: str) -> float:
+        """Stop a named timer and return elapsed time.
 
         Parameters
         ----------
-        phase : str
-            The phase whose timer to stop.
+        name : str
+            Timer name to stop.
 
         Returns
         -------
         float
-            Elapsed wall-clock time (seconds).
+            Elapsed time in seconds.
 
         Raises
         ------
         ValueError
-            If no timer was started for ``phase``.
+            If the timer was not started.
         """
-        if phase not in self._timers:
-            raise ValueError(f"No active timer for '{phase}'.")
+        if name not in self._timers:
+            raise ValueError(f"Timer '{name}' was not started")
 
-        elapsed = time.perf_counter() - self._timers.pop(phase)
-        self._elapsed[phase].append(elapsed)
-        return float(elapsed)
-
-    # ------------------------------------------------------------------
-    # Memory recording
-    # ------------------------------------------------------------------
-
-    def record_memory(self) -> dict:
-        """Record the current process memory usage.
-
-        Uses ``psutil`` when available; otherwise falls back to reading
-        ``/proc/self/status`` on Linux.
-
-        Returns
-        -------
-        dict
-            Dictionary with keys ``"rss"`` (resident set size, bytes) and
-            ``"vms"`` (virtual memory size, bytes). Both may be ``0.0`` if
-            neither psutil nor /proc is accessible.
-        """
-        if _HAS_PSUTIL:
-            proc = psutil.Process(os.getpid())
-            mem_info = proc.memory_info()
-            entry: dict[str, float] = {
-                "rss": float(mem_info.rss),
-                "vms": float(mem_info.vms),
-            }
-        else:
-            entry = _get_memory_linux_proc()
-
-        self._memory_snapshots.append(entry)
-        return dict(entry)
-
-    # ------------------------------------------------------------------
-    # Summary & regression detection
-    # ------------------------------------------------------------------
+        elapsed = time.time() - self._timers[name]
+        del self._timers[name]  # Remove to prevent double-stop
+        return elapsed
 
     def get_summary(self) -> dict:
-        """Return a statistical performance summary across all recorded runs.
+        """Get a summary of all measured timings.
 
         Returns
         -------
         dict
-            Dictionary with keys:
-
-            - ``phase_timings`` (dict[str, dict]): Per-phase stats with
-              ``mean``, ``median``, ``std`` (seconds).
-            - ``total_simulation_time`` (float): Sum of all phase times.
-            - ``peak_memory`` (dict): Maximum RSS and VMS across snapshots.
+            Dictionary mapping timer names to elapsed times in seconds.
         """
-        phase_stats: dict[str, dict] = {}
-        total_time = 0.0
+        summary = {}
+        for name, start_time in self._timers.items():
+            elapsed = time.time() - start_time
+            summary[name] = elapsed
+        return summary
 
-        for phase in self._PHASES:
-            times = np.array(self._elapsed[phase], dtype=float)
-            if len(times) > 0:
-                stats = {
-                    "mean": float(np.mean(times)),
-                    "median": float(np.median(times)),
-                    "std": float(np.std(times)) if len(times) > 1 else 0.0,
-                    "count": int(len(times)),
-                }
-            else:
-                stats = {"mean": 0.0, "median": 0.0, "std": 0.0, "count": 0}
+    # -------------------------------------------------------------------
+    # Memory monitoring
+#    ----------------------------------------------------------------
 
-            phase_stats[phase] = stats
-            total_time += float(np.sum(times))
+    def record_memory(self) -> float:
+        """Record current memory usage and return RSS in MB.
 
-        # Peak memory
-        rss_values = [s["rss"] for s in self._memory_snapshots if "rss" in s]
-        vms_values = [s["vms"] for s in self._memory_snapshots if "vms" in s]
+        Returns
+        -------
+        float
+            Resident set size (RSS) in megabytes.
+        """
+        try:
+            process = psutil.Process(os.getpid())
+            rss_mb = process.memory_info().rss / (1024 * 1024)
+            self._memory_samples.append(rss_mb)
+            return rss_mb
+        except Exception:
+            # Fallback: estimate from /proc/self/status on Linux
+            try:
+                with open("/proc/self/status", "r") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            kb = int(line.split()[1])
+                            mb = kb / 1024.0
+                            self._memory_samples.append(mb)
+                            return mb
+            except FileNotFoundError:
+                pass
 
-        peak_memory: dict[str, float] = {
-            "rss": float(max(rss_values)) if rss_values else 0.0,
-            "vms": float(max(vms_values)) if vms_values else 0.0,
-        }
+            # Ultimate fallback: use Python's gc module estimate
+            import sys
+            total = sum(sys.getsizeof(obj) for obj in gc.get_objects())
+            self._memory_samples.append(total / (1024 * 1024))
+            return total / (1024 * 1024)
+
+    def get_memory_summary(self) -> dict:
+        """Get memory usage statistics.
+
+        Returns
+        -------
+        dict
+            Memory statistics with keys:
+            - 'samples': list of RSS values in MB
+            - 'min_mb': minimum RSS observed
+            - 'max_mb': maximum RSS observed
+            - 'avg_mb': average RSS
+        """
+        if not self._memory_samples:
+            return {"samples": [], "min_mb": 0, "max_mb": 0, "avg_mb": 0}
 
         return {
-            "phase_timings": phase_stats,
-            "total_simulation_time": total_time,
-            "peak_memory": peak_memory,
+            "samples": list(self._memory_samples),
+            "min_mb": float(min(self._memory_samples)),
+            "max_mb": float(max(self._memory_samples)),
+            "avg_mb": float(sum(self._memory_samples) / len(self._memory_samples)),
         }
 
-    def detect_regression(
-        self, baseline: dict, threshold_pct: float = 10.0
-    ) -> list[str]:
-        """Compare current metrics against a baseline and flag slow-downs.
+    # -------------------------------------------------------------------
+    # Regression detection
+#    ----------------------------------------------------------------
+
+    def check_regression(
+        self,
+        metric_name: str,
+        current_value: float,
+        baseline_file: Optional[str] = None,
+    ) -> dict:
+        """Check if a metric shows regression against baseline.
 
         Parameters
         ----------
-        baseline : dict
-            Dictionary with per-phase ``mean`` timing values (seconds), e.g.:
-
-            .. code-block:: python
-
-                {"assembly": 1.2, "solve": 3.5}
-
-        threshold_pct : float, optional
-            Percentage increase over baseline that triggers a warning
-            (default 10 %).
+        metric_name : str
+            Name of the metric to check (e.g., "solve_time", "memory_peak").
+        current_value : float
+            Current measured value.
+        baseline_file : str, optional
+            Path to baseline file. Uses self.baseline_file if None.
 
         Returns
         -------
-        list[str]
-            A list of alert messages for each phase exceeding the threshold.
-            Empty list means no regression detected.
+        dict
+            Regression check result with keys:
+            - 'baseline': previous baseline value
+            - 'current': current measured value
+            - 'deviation_pct': percentage deviation from baseline
+            - 'is_regression': True if deviation exceeds threshold
+
+        Raises
+        ------
+        FileNotFoundError
+            If no baseline file exists.
         """
-        alerts: list[str] = []
+        bf = baseline_file or self.baseline_file
 
-        for phase, baseline_val in baseline.items():
-            times = np.array(self._elapsed.get(phase, []), dtype=float)
-            if len(times) == 0 or baseline_val <= 0:
-                continue
+        if not os.path.exists(bf):
+            raise FileNotFoundError(f"Baseline file not found: {bf}")
 
-            current_mean = float(np.mean(times))
-            pct_increase = (current_mean - baseline_val) / baseline_val * 100.0
+        with open(bf, "r") as f:
+            baselines = json.load(f)
 
-            if pct_increase > threshold_pct:
-                alerts.append(
-                    f"Phase '{phase}': {pct_increase:.1f}% slowdown "
-                    f"(baseline={baseline_val:.4f}s, current={current_mean:.4f}s)"
-                )
+        if metric_name not in baselines:
+            raise KeyError(f"No baseline for metric: {metric_name}")
 
-        return alerts
+        baseline_value = baselines[metric_name]
+        deviation_pct = (current_value - baseline_value) / max(baseline_value, 1e-10) * 100
+        is_regression = deviation_pct > self.regression_threshold * 100
 
-
-# ---------------------------------------------------------------------------
-# MemoryOptimizer
-# ---------------------------------------------------------------------------
+        return {
+            "baseline": baseline_value,
+            "current": current_value,
+            "deviation_pct": float(deviation_pct),
+            "is_regression": bool(is_regression),
+        }
 
 
 class MemoryOptimizer:
-    """Cache and memory-management utilities for MoM frequency sweeps.
+    """Optimize memory usage for large MoM simulations.
 
-    Provides methods to cache frequency-independent matrix elements (geometric
-    terms of the Green's function), invalidate caches when geometry or frequency
-    range changes, and estimate the RAM footprint of the MoM system.
+    This class provides methods for caching static matrix elements,
+    invalidating cached data on geometry changes, and estimating
+    memory requirements for problem sizes.
     """
 
     def __init__(self) -> None:
-        """Initialise the memory optimiser.
-
-        Sets up an empty cache dictionary and a flag indicating whether the
-        geometry has been changed since the last cache creation.
-        """
-        self._cache: dict[str, Any] = {}
-        self._geometry_changed: bool = False
-        self._freq_range_changed: bool = False
-
-    # ------------------------------------------------------------------
-    # Cache management
-    # ------------------------------------------------------------------
+        """Initialise the memory optimizer."""
+        self._cache: Dict[str, object] = {}
 
     def cache_static_elements(
-        self, Z_matrix: np.ndarray, frequency_Hz: float
-    ) -> dict:
-        """Cache matrix elements that are independent of frequency.
-
-        Geometric terms (e.g. basis function overlaps) do not vary with
-        frequency; only the Green's-function kernel does. By caching these
-        static components we avoid redundant computation during sweeps.
-
-        Parameters
-        ----------
-        Z_matrix : np.ndarray
-            The full impedance matrix at a reference frequency. Only the
-            geometric contributions are cached (the frequency-dependent kernel
-            is re-evaluated each sweep).
-        frequency_Hz : float
-            Reference frequency in Hz used to generate ``Z_matrix``.
-
-        Returns
-        -------
-        dict
-            A cache entry containing:
-
-            - ``cache_key`` (str): MD5 hash of the matrix fingerprint.
-            - ``frequency_Hz`` (float): Reference frequency.
-            - ``shape`` (tuple[int, int]): Matrix dimensions.
-            - ``dtype`` (str): NumPy dtype name.
-        """
-        Z_arr = np.asarray(Z_matrix)
-
-        # Create a simple fingerprint for the static part
-        sha1 = hashlib.sha256(Z_arr.tobytes()).hexdigest()[:16]
-        cache_key = f"static_{sha1}"
-
-        self._cache[cache_key] = {
-            "Z_static": Z_arr.copy(),
-            "frequency_Hz": float(frequency_Hz),
-            "shape": Z_arr.shape,
-            "dtype": str(Z_arr.dtype),
-        }
-
-        self._geometry_changed = False
-        self._freq_range_changed = False
-
-        return {
-            "cache_key": cache_key,
-            "frequency_Hz": float(frequency_Hz),
-            "shape": Z_arr.shape,
-            "dtype": str(Z_arr.dtype),
-        }
-
-    def invalidate_cache(
         self,
-        geometry_changed: bool = False,
-        freq_range_changed: bool = False,
+        elements: dict,
+        cache_key: str,
     ) -> None:
-        """Invalidate cached elements when geometry or frequency range changes.
+        """Cache static matrix elements that don't change with frequency.
 
         Parameters
         ----------
-        geometry_changed : bool, optional
-            Set to ``True`` if the simulation geometry has been modified.
-        freq_range_changed : bool, optional
-            Set to ``True`` if the sweep frequency range has changed.
+        elements : dict
+            Matrix elements to cache (e.g., geometric terms).
+        cache_key : str
+            Unique identifier for the cached data.
         """
-        if geometry_changed:
-            self._cache.clear()
-            self._geometry_changed = True
-        if freq_range_changed:
-            self._freq_range_changed = True
+        self._cache[cache_key] = elements
 
-    # ------------------------------------------------------------------
-    # Memory estimation
-    # ------------------------------------------------------------------
-
-    def estimate_memory_requirement(self, num_triangles: int) -> dict:
-        """Estimate RAM needed for a MoM system of given mesh size.
+    def invalidate_cache(self, cache_key: Optional[str] = None) -> int:
+        """Invalidate cached matrix elements.
 
         Parameters
         ----------
-        num_triangles : int
-            Number of triangular basis functions (matrix dimension).
+        cache_key : str, optional
+            Specific cache key to invalidate. If None, clears all caches.
+
+        Returns
+        -------
+        int
+            Number of cache entries invalidated.
+        """
+        if cache_key is not None:
+            if cache_key in self._cache:
+                del self._cache[cache_key]
+                return 1
+            return 0
+
+        count = len(self._cache)
+        self._cache.clear()
+        return count
+
+    def estimate_memory_requirement(
+        self,
+        n_unknowns: int,
+        density: float = 0.3,
+    ) -> dict:
+        """Estimate memory requirements for a MoM problem.
+
+        Parameters
+        ----------
+        n_unknowns : int
+            Number of RWG basis function unknowns (matrix dimension).
+        density : float, default=0.3
+            Expected matrix fill percentage (sparse matrix density).
 
         Returns
         -------
         dict
-            Dictionary with keys ``"bytes_per_phase"`` mapping each phase to
-            the estimated byte requirement:
-
-            - ``"Z_matrix"``: Full complex impedance matrix.
-            - ``"rhs_vector"``: Right-hand-side excitation vector.
-            - ``"solution_vector"``: Unknown current solution vector.
-            - ``"green_cache"``: Cached Green's function contributions.
-            - ``"total_estimated"``: Sum of all phases (bytes).
+            Memory estimates with keys:
+            - 'dense_matrix_mb': memory for dense matrix in MB
+            - 'sparse_matrix_mb': memory for sparse matrix in MB
+            - 'rhs_vector_mb': memory for RHS vector in MB
+            - 'total_estimate_mb': total memory estimate in MB
         """
-        n = num_triangles
+        # Estimate matrix size
+        n = n_unknowns
+        nnz = int(n * n * density)  # Number of non-zero elements
 
-        # complex128 = 16 bytes per element
-        z_matrix_bytes = n * n * 16  # full matrix
+        # Memory estimates (complex128 = 16 bytes per element)
+        dense_bytes = n * n * 16
+        sparse_bytes = nnz * 16 + n * (8 + 8)  # CSR format overhead
         rhs_bytes = n * 16
-        solution_bytes = n * 16
-
-        # Green's function cache: sparse representation ~ O(n * log(n)) entries
-        green_cache_bytes = int(n * np.log(max(n, 2)) * 16)
-
-        total = z_matrix_bytes + rhs_bytes + solution_bytes + green_cache_bytes
 
         return {
-            "bytes_per_phase": {
-                "Z_matrix": z_matrix_bytes,
-                "rhs_vector": rhs_bytes,
-                "solution_vector": solution_bytes,
-                "green_cache": green_cache_bytes,
-            },
-            "total_estimated": total,
-            "num_triangles": n,
+            "dense_matrix_mb": float(dense_bytes / (1024 * 1024)),
+            "sparse_matrix_mb": float(sparse_bytes / (1024 * 1024)),
+            "rhs_vector_mb": float(rhs_bytes / (1024 * 1024)),
+            "total_estimate_mb": float((dense_bytes + sparse_bytes + rhs_bytes) / (1024 * 1024)),
         }
 
 
+class BenchmarkRunner:
+    """Run performance benchmarks and compare against baselines.
+
+    This class provides methods for running timing benchmarks on solver
+    operations and comparing results against stored baselines.
+    """
+
+    def __init__(self, monitor: Optional[PerformanceMonitor] = None) -> None:
+        """Initialise the benchmark runner."""
+        self.monitor = monitor or PerformanceMonitor()
+
+    def benchmark_matrix_assembly(
+        self,
+        n_unknowns: int,
+        iterations: int = 5,
+    ) -> dict:
+        """Benchmark matrix assembly time.
+
+        Parameters
+        ----------
+        n_unknowns : int
+            Number of unknowns for the test problem.
+        iterations : int, default=5
+            Number of iterations to average over.
+
+        Returns
+        -------
+        dict
+            Benchmark results with keys:
+            - 'n_unknowns': problem size
+            - 'mean_time_s': mean assembly time in seconds
+            - 'min_time_s': minimum assembly time
+            - 'max_time_s': maximum assembly time
+        """
+        times = []
+
+        for _ in range(iterations):
+            self.monitor.start_timer("matrix_assembly")
+
+            # Simulate matrix assembly (stub: O(N^2) dense assembly)
+            import numpy as np
+            Z = np.random.randn(n_unknowns, n_unknowns) + 1j * np.random.randn(
+                n_unknowns, n_unknowns
+            )
+
+            elapsed = self.monitor.stop_timer("matrix_assembly")
+            times.append(elapsed)
+
+        return {
+            "n_unknowns": n_unknowns,
+            "mean_time_s": float(np.mean(times)),
+            "min_time_s": float(min(times)),
+            "max_time_s": float(max(times)),
+        }
+
+    def benchmark_linear_solve(
+        self,
+        n_unknowns: int,
+        iterations: int = 5,
+    ) -> dict:
+        """Benchmark linear solve time.
+
+        Parameters
+        ----------
+        n_unknowns : int
+            Number of unknowns for the test problem.
+        iterations : int, default=5
+            Number of iterations to average over.
+
+        Returns
+        -------
+        dict
+            Benchmark results with keys:
+            - 'n_unknowns': problem size
+            - 'mean_time_s': mean solve time in seconds
+            - 'min_time_s': minimum solve time
+            - 'max_time_s': maximum solve time
+        """
+        times = []
+
+        for _ in range(iterations):
+            self.monitor.start_timer("linear_solve")
+
+            # Simulate linear solve (stub: direct solve)
+            import numpy as np
+            A = np.eye(n_unknowns) + 0.1 * np.random.randn(
+                n_unknowns, n_unknowns
+            )
+            b = np.random.randn(n_unknowns) + 1j * np.random.randn(n_unknowns)
+            x = np.linalg.solve(A, b)
+
+            elapsed = self.monitor.stop_timer("linear_solve")
+            times.append(elapsed)
+
+        return {
+            "n_unknowns": n_unknowns,
+            "mean_time_s": float(np.mean(times)),
+            "min_time_s": float(min(times)),
+            "max_time_s": float(max(times)),
+        }
+
+
+import gc  # Import at module level for fallback memory estimation
+
+
 # ---------------------------------------------------------------------------
-# profile_solver -- decorator-like profiler
+# Module-level convenience functions
 # ---------------------------------------------------------------------------
 
-
-def profile_solver(
-    function: Callable, *args: Any, **kwargs: Any
-) -> dict:
-    """Run a function while profiling its time and memory usage.
-
-    This acts as a decorator-like wrapper (not actually a ``@decorator`` because
-    it consumes the callable directly). It measures wall-clock time, records
-    memory snapshots before/after, and returns a summary dictionary alongside
-    the function's return value.
+def profile_solver(workflow, frequency: float = 1e9) -> dict:
+    """Profile a solver workflow and return timing statistics.
 
     Parameters
     ----------
-    function : callable
-        The simulation or solver function to profile.
-    \\*args
-        Positional arguments passed to ``function``.
-    \\**kwargs
-        Keyword arguments passed to ``function``.
+    workflow : SimulationWorkflow
+        The workflow instance to profile.
+    frequency : float, optional
+        Operating frequency in Hz. Default is 1 GHz.
 
     Returns
     -------
     dict
-        Dictionary with keys:
-
-        - ``result``: The return value of ``function``.
-        - ``wall_time_s`` (float): Wall-clock execution time in seconds.
-        - ``memory_before`` (dict): RSS/VMS before the call.
-        - ``memory_after`` (dict): RSS/VMS after the call.
-        - ``peak_memory`` (dict): Maximum of the two snapshots.
-
-    Example
-    -------
-    >>> def solve(Z, b): return np.linalg.solve(Z, b)
-    >>> out = profile_solver(solve, Z_matrix, rhs_vector)
-    >>> print(f"Time: {out['wall_time_s']:.3f}s")
+        Timing statistics with keys:
+        - 'total_time_s': total wall-clock time
+        - 'steps': dict of per-step timing
     """
     monitor = PerformanceMonitor()
+    import time
 
-    # Memory before
-    mem_before = monitor.record_memory()
-
-    t_start = time.perf_counter()
-    try:
-        result = function(*args, **kwargs)
-    except Exception as exc:
-        elapsed = time.perf_counter() - t_start
-        mem_after = monitor.record_memory()
-        raise RuntimeError(
-            f"Function {function.__name__} failed after {elapsed:.3f}s: {exc}"
-        ) from exc
-    finally:
-        elapsed = time.perf_counter() - t_start
-
-    mem_after = monitor.record_memory()
-
-    peak_rss = max(mem_before.get("rss", 0), mem_after.get("rss", 0))
-    peak_vms = max(mem_before.get("vms", 0), mem_after.get("vms", 0))
+    start = time.time()
+    result = workflow.run(frequency=frequency)
+    elapsed = time.time() - start
 
     return {
+        "total_time_s": elapsed,
         "result": result,
-        "wall_time_s": float(elapsed),
-        "memory_before": mem_before,
-        "memory_after": mem_after,
-        "peak_memory": {"rss": peak_rss, "vms": peak_vms},
     }
 
 
-# ---------------------------------------------------------------------------
-# Module-level example usage (executed when imported as __main__)
-# ---------------------------------------------------------------------------
+def benchmark_solver(workflow, frequencies: list[float]) -> dict:
+    """Benchmark a solver across multiple frequencies.
 
-if __name__ == "__main__":
-    print("=" * 60)
-    print("Performance Monitor -- Example Usage")
-    print("=" * 60)
+    Parameters
+    ----------
+    workflow : SimulationWorkflow
+        The workflow instance to benchmark.
+    frequencies : list[float]
+        List of frequencies in Hz to test.
 
-    # PerformanceMonitor demo
-    monitor = PerformanceMonitor()
-    monitor.start_timer("assembly")
-    time.sleep(0.01)
-    elapsed = monitor.stop_timer("assembly")
-    print(f"Assembly phase   : {elapsed:.4f}s")
-
-    monitor.start_timer("solve")
-    time.sleep(0.02)
-    elapsed = monitor.stop_timer("solve")
-    print(f"Solve phase      : {elapsed:.4f}s")
-
-    mem = monitor.record_memory()
-    print(f"Memory snapshot  : RSS={mem['rss'] / 1e6:.1f} MB, VMS={mem['vms'] / 1e6:.1f} MB")
-
-    summary = monitor.get_summary()
-    print(f"Total sim time   : {summary['total_simulation_time']:.4f}s")
-    print(f"Peak memory RSS  : {summary['peak_memory']['rss'] / 1e6:.1f} MB")
-
-    # Regression detection demo
-    baseline = {"assembly": 0.05, "solve": 0.10}
-    alerts = monitor.detect_regression(baseline, threshold_pct=10.0)
-    if alerts:
-        for a in alerts:
-            print(f"WARNING: {a}")
-    else:
-        print("No regressions detected.")
-
-    # MemoryOptimizer demo
-    optimizer = MemoryOptimizer()
-    Z_example = np.zeros((10, 10), dtype=np.complex128)
-    cache_info = optimizer.cache_static_elements(Z_example, frequency_Hz=1e9)
-    print(f"Cache key        : {cache_info['cache_key']}")
-
-    mem_est = optimizer.estimate_memory_requirement(num_triangles=5000)
-    print(f"Estimated total  : {mem_est['total_estimated'] / 1e6:.2f} MB")
-
-    # profile_solver demo
-    def dummy_solve(Z, b):
-        return np.linalg.solve(Z, b)
-
-    Z_test = np.eye(5) + 0.1 * np.ones((5, 5))
-    b_test = np.ones(5)
-    out = profile_solver(dummy_solve, Z_test, b_test)
-    print(f"Dummy solve time : {out['wall_time_s']:.4f}s")
+    Returns
+    -------
+    dict
+        Benchmark results indexed by frequency.
+    """
+    results = {}
+    for f in frequencies:
+        start = time.time()
+        result = workflow.run(frequency=f)
+        elapsed = time.time() - start
+        results[f] = {"time_s": elapsed, "result": result}
+    return results

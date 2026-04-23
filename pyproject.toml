@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deTAGrandMere"
+version = "0.1.0"
+description = "Open-Source Planar Antenna Simulation Software (Method of Moments)"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "DeTaGrandMere Developers"},
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "matplotlib>=3.7.0",
+    "pyvista>=0.35.0",
+    "h5py>=3.8.0",
+]
+
+[project.optional-dependencies]
+cad = [
+    "opencascade-core>=7.7.0",
+    "cgal-python3",
+]
+parallel = [
+    "petsc4py",
+    "mpi4py",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+gui = [
+    "PyQt6>=6.5.0",
+]
+
+[project.scripts]
+deTAGrandMere = "run:main"
+
+[tool.setuptools.packages.find]
+include = ["src*", "tests*"]
+exclude = ["*tests*", "*benchmarks*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -v"
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]

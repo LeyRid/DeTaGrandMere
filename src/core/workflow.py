@@ -218,24 +218,31 @@ class SimulationWorkflow:
             return  # CLI overrides only relevant for the simulate subcommand
 
         # Solver parameters
-        if cli_args.get("tolerance") is not None:
-            self.config["solver"]["tolerance"] = float(cli_args.tolerance)
-        if cli_args.get("max_iterations") is not None:
-            self.config["solver"]["max_iterations"] = int(cli_args.max_iterations)
-        if cli_args.get("solver_type") is not None:
-            self.config["solver"]["solver_type"] = str(cli_args.solver_type).lower()
+        tolerance = getattr(cli_args, "tolerance", None)
+        if tolerance is not None:
+            self.config["solver"]["tolerance"] = float(tolerance)
+        max_iter = getattr(cli_args, "max_iterations", None)
+        if max_iter is not None:
+            self.config["solver"]["max_iterations"] = int(max_iter)
+        solver_type = getattr(cli_args, "solver_type", None)
+        if solver_type is not None:
+            self.config["solver"]["solver_type"] = str(solver_type).lower()
 
         # Mesh parameters
-        if cli_args.get("alpha_shape") is not None:
-            self.config["mesh"]["alpha_shape"] = float(cli_args.alpha_shape)
-        if cli_args.get("min_quality") is not None:
-            self.config["mesh"]["min_quality"] = float(cli_args.min_quality)
-        if cli_args.get("refinement_level") is not None:
-            self.config["mesh"]["refinement_level"] = int(cli_args.refinement_level)
+        frequency = getattr(cli_args, "frequency", None)
+        if frequency is not None:
+            self.config["mesh"]["frequency_hz"] = float(frequency)
+        alpha_shape = getattr(cli_args, "alpha_shape", None)
+        if alpha_shape is not None:
+            self.config["mesh"]["alpha_shape"] = float(alpha_shape)
+        refinement_level = getattr(cli_args, "refinement_level", None)
+        if refinement_level is not None:
+            self.config["mesh"]["refinement_level"] = int(refinement_level)
 
         # File I/O
-        if cli_args.get("output_dir") is not None:
-            self.config["file_io"]["output_dir"] = str(cli_args.output_dir)
+        output_dir = getattr(cli_args, "output_dir", None)
+        if output_dir is not None:
+            self.config["file_io"]["output_dir"] = str(output_dir)
 
     # -----------------------------------------------------------------------
     # Step execution helpers
