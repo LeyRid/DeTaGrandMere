@@ -42,7 +42,7 @@ src/
 
 ---
 
-## UC-01: Run Electromagnetic Simulation (End-to-End Workflow)
+## UC-01: Run Electromagnetic Simulation (End-to-End Workflow) — [🔗](../use_cases/0_summary/UC-01-Run%20Electromagnetic%20Simulation.md)
 
 **Goal:** Complete end-to-end simulation from geometry import to validated results. This orchestrates all other use cases.
 
@@ -81,7 +81,7 @@ src/
 
 ---
 
-## UC-02: Optimize Antenna Design Iteratively
+## UC-02: Optimize Antenna Design Iteratively — [🔗](../use_cases/0_summary/UC-02-Optimize%20Antenna%20Design%20Iteratively.md)
 
 **Goal:** Iterative design refinement loop with parameter tracking, result comparison, and convergence monitoring.
 
@@ -112,7 +112,7 @@ src/
 
 ---
 
-## UC-03: Import Geometry and Define Materials
+## UC-03: Import Geometry and Define Materials — [🔗](../use_cases/1_user_goals/UC-03-Import%20Geometry%20and%20Define%20Materials.md)
 
 **Goal:** Load antenna geometry from CAD files (STEP/STL/OBJ), validate integrity, and assign material properties.
 
@@ -163,7 +163,7 @@ src/
 
 ---
 
-## UC-04: Define Ports and Boundary Conditions
+## UC-04: Define Ports and Boundary Conditions — [🔗](../use_cases/1_user_goals/UC-04-Define%20Ports%20and%20Boundary%20Conditions.md)
 
 **Goal:** Configure electrical ports (excitation points) and simulation domain boundary conditions.
 
@@ -206,7 +206,7 @@ src/
 
 ---
 
-## UC-05: Generate and Validate Computational Mesh
+## UC-05: Generate and Validate Computational Mesh — [🔗](../use_cases/1_user_goals/UC-05-Generate%20and%20Validate%20Computational%20Mesh.md)
 
 **Goal:** Create a quality computational mesh for the antenna geometry with wavelength-based element sizing.
 
@@ -242,7 +242,7 @@ src/
 
 ---
 
-## UC-06: Configure Solver and Run Frequency Sweep
+## UC-06: Configure Solver and Run Frequency Sweep — [🔗](../use_cases/1_user_goals/UC-06-Configure%20Solver%20and%20Run%20Frequency%20Sweep.md)
 
 **Goal:** Set up the numerical solver (MoM formulation with PETSc) and execute frequency sweep computation.
 
@@ -296,7 +296,7 @@ src/
 
 ---
 
-## UC-07: Analyze S-Parameters and Bandwidth Results
+## UC-07: Analyze S-Parameters and Bandwidth Results — [🔗](../use_cases/1_user_goals/UC-07-Analyze%20S-Parameters%20and%20Bandwidth%20Results.md)
 
 **Goal:** Post-process simulation results to extract S-parameters, resonance frequencies, bandwidth, and impedance matching information.
 
@@ -331,7 +331,7 @@ src/
 
 ---
 
-## UC-08: Analyze Radiation Patterns and Far-Field Results
+## UC-08: Analyze Radiation Patterns and Far-Field Results — [🔗](../use_cases/1_user_goals/UC-08-Analyze%20Radiation%20Patterns%20and%20Far-Field%20Results.md)
 
 **Goal:** Compute far-field radiation patterns from near-field solution and extract key antenna metrics.
 
@@ -372,7 +372,7 @@ src/
 
 ---
 
-## UC-09: Verify Convergence and Mesh Quality
+## UC-09: Verify Convergence and Mesh Quality — [🔗](../use_cases/1_user_goals/UC-09-Verify%20Convergence%20and%20Mesh%20Quality.md)
 
 **Goal:** Perform convergence testing to ensure simulation results are independent of mesh density and solver settings.
 
@@ -404,7 +404,7 @@ src/
 
 ---
 
-## UC-10: Export Simulation Results for Post-Processing
+## UC-10: Export Simulation Results for Post-Processing — [🔗](../use_cases/1_user_goals/UC-10-Export%20Simulation%20Results%20for%20Post-Processing.md)
 
 **Goal:** Export simulation results in multiple formats for external analysis and documentation.
 
@@ -432,7 +432,7 @@ src/
 
 ---
 
-## UC-11: Generate Computational Mesh with Adaptive Refinement (Subfunction)
+## UC-11: Generate Computational Mesh with Adaptive Refinement (Subfunction) — [🔗](../use_cases/2_subfunctions/UC-11-Generate%20Computational%20Mesh%20with%20Adaptive%20Refinement.md)
 
 **Goal:** Automated mesh generation with error-indicator-based adaptive refinement cycles.
 
@@ -463,7 +463,7 @@ src/
 
 ---
 
-## UC-12: Solve Impedance Matrix Using Numerical Solver (Subfunction)
+## UC-12: Solve Impedance Matrix Using Numerical Solver (Subfunction) — [🔗](../use_cases/2_subfunctions/UC-12-Solve%20Impedance%20Matrix%20Using%20Numerical%20Solver.md)
 
 **Goal:** Assemble and solve the linear system [Z][I] = [V] for current distribution at each frequency point.
 
@@ -500,7 +500,7 @@ src/
 
 ---
 
-## UC-13: Perform Near-Field to Far-Field Transformation (Subfunction)
+## UC-13: Perform Near-Field to Far-Field Transformation (Subfunction) — [🔗](../use_cases/2_subfunctions/UC-13-Perform%20Near-Field%20to%20Far-Field%20Transformation.md)
 
 **Goal:** Convert surface current distribution into far-field radiation patterns using Green's function propagation.
 
@@ -526,7 +526,7 @@ src/
 
 ---
 
-## UC-14: Validate Results Against Analytical Benchmarks (Subfunction)
+## UC-14: Validate Results Against Analytical Benchmarks (Subfunction) — [🔗](../use_cases/2_subfunctions/UC-14-Validate%20Results%20Against%20Analytical%20Benchmarks.md)
 
 **Goal:** Compare simulation results against known analytical solutions for canonical antenna geometries.
 
@@ -554,7 +554,7 @@ src/
 
 ---
 
-## UC-15: Manage Material Properties and Boundary Conditions (Subfunction)
+## UC-15: Manage Material Properties and Boundary Conditions (Subfunction) — [🔗](../use_cases/2_subfunctions/UC-15-Manage%20Material%20Properties%20and%20Boundary%20Conditions.md)
 
 **Goal:** Centralized material library management and boundary condition consistency validation.
 
